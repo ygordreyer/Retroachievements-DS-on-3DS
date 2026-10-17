@@ -38,6 +38,10 @@
 
 #include "ra.h"
 #include "locations.h"
+
+#ifndef RA_UNLOCK_CHANNEL
+#define RA_UNLOCK_CHANNEL(address) ((vu32*)(address))
+#endif
 #include "ra_wifi.h"   /* raPendingBlock -- the menu's Sync Pending tally */
 #include "ra_text.h"
 #include "ra_rc_frame.h"
@@ -410,17 +414,16 @@ static int ra_rc_validate_address(uint32_t consoleAddress) {
     is not an option. So an unlock goes in this ring and ra_rc_offer_unlock() feeds the channel from the
     frame loop.
 
-    Sized at 8 because a set does not fire eight achievements before the next frame; if it somehow did,
-    `unlockLost` counts what fell off rather than letting the ring wrap silently over an unsent id. An
-    unlock this fork failed to report is exactly the thing that must not be invisible.
+    One slot per staged trigger (128 maximum). ARM7 backpressure may last the whole session.
 */
-#define RA_UNLOCK_RING 8
+#define RA_UNLOCK_RING 128
 static u32 unlockRing[RA_UNLOCK_RING];
 static u8  unlockHead;      /* next slot to write */
 static u8  unlockTail;      /* next slot to offer */
 static u8  unlockQueued;    /* how many are in the ring */
 static u8  unlockLost;      /* ring was full when one fired */
-static u16 unlockSent;      /* handed to the ARM7 and acknowledged */
+static u16 unlockOffered;
+static u16 unlockSent;      /* committed to SD by ARM7 */
 static u8  unlockNoChannel; /* the published shared address was not one of the two legal ones */
 static u8  unlockSynthetic; /* triggers refused for carrying a synthetic id */
 
@@ -593,9 +596,24 @@ static void ra_rc_queue_unlock(u32 id) {
 static void ra_rc_offer_unlock(raSnapshot* snapshot) {
 	vu32* shared;
 
-	if (unlockQueued == 0) {
-		return;
-	}
+    if (unlockOffered || unlockQueued) {
+        if (snapshot->shared == CARDENGINE_SHARED_ADDRESS_SDK1
+         || snapshot->shared == CARDENGINE_SHARED_ADDRESS_SDK5) {
+            const vu32* const channel = RA_UNLOCK_CHANNEL(snapshot->shared);
+            const u32 progress = channel[RA_SHARED_UNLOCK_PROGRESS];
+            volatile raUnlockDiagnostics* const d =
+                (volatile raUnlockDiagnostics*)CARDENGINEI_ARM9_RA_UNLOCK_LOCATION;
+            unlockSent = (u16)(progress >> 16);
+            d->version = RA_UNLOCK_DIAGNOSTICS_VERSION;
+            d->size = sizeof(*d);
+            d->accepted = unlockOffered - (channel[RA_SHARED_UNLOCK_REQ] != 0);
+            d->committed = unlockSent;
+            d->pending = unlockQueued + unlockOffered - unlockSent;
+            d->append_status = (progress >> 8) & 255u;
+            d->magic = RA_UNLOCK_DIAGNOSTICS_MAGIC;
+        }
+    }
+    if (unlockQueued == 0) return;
 	/*
 	    `queue=0` in ra.cfg. Stopped here, one step before the handoff, so nothing downstream runs at
 	    all: no FIFO request, no file read on the ARM7, no sector write to the card while the game is
@@ -628,7 +646,7 @@ static void ra_rc_offer_unlock(raSnapshot* snapshot) {
 		}
 		return;
 	}
-	shared = (vu32*)snapshot->shared;
+	shared = RA_UNLOCK_CHANNEL(snapshot->shared);
 	if (shared[RA_SHARED_UNLOCK_REQ] != 0) {
 		return;   /* the previous one has not been picked up yet */
 	}
@@ -689,8 +707,8 @@ static void ra_rc_offer_unlock(raSnapshot* snapshot) {
 
 	unlockTail = (u8)((unlockTail + 1) % RA_UNLOCK_RING);
 	unlockQueued--;
-	if (unlockSent < 0xFFFF) {
-		unlockSent++;
+	if (unlockOffered < 0xFFFF) {
+		unlockOffered++;
 	}
 }
 
@@ -1538,9 +1556,9 @@ static u8 ra_rc_frame_step(raSnapshot* snapshot) {
 	    reporting boot-time state only ever since.
 	*/
 	if (((raPendingBlock*)CARDENGINEI_ARM9_RA_PENDING_LOCATION)->magic == RA_PENDING_MAGIC) {
-		((raPendingBlock*)CARDENGINEI_ARM9_RA_PENDING_LOCATION)->session = unlockSent;
+		((raPendingBlock*)CARDENGINEI_ARM9_RA_PENDING_LOCATION)->session = unlockQueued + unlockOffered;
 	}
-	snapshot->unlockQueued = unlockQueued;
+	snapshot->unlockQueued = unlockQueued + unlockOffered - unlockSent;
 	snapshot->unlockLost   = unlockLost;
 
 	return frameState.unsupported ? RA_RC_UNSUPPORTED_BUDGET : RA_RC_FRAME;

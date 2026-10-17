@@ -50,3 +50,40 @@ else
     cat "$RA_HOST_OUT/launcher.log"
     exit 1
 fi
+
+for variant in NTR TWLSDK; do
+    define=
+    if [ "$variant" = TWLSDK ]; then define=-DTWLSDK; fi
+    "$CC" -std=gnu99 -Wall -Wextra -O1 $define \
+        -Itools/host-stubs -Iretail/common/include \
+        tools/ra_unlock_test.c -o "$RA_HOST_OUT/unlock-$variant"
+    "$RA_HOST_OUT/unlock-$variant"
+done
+
+"$CC" -std=gnu99 -Wall -Wextra -O1 -DRA_LAUNCHER_WIFI=1 \
+    -Itools/host-stubs -Iretail/common/include -I"$RC/include" -I"$RC/src" \
+    tools/ra_queue_durability_test.c retail/arm9/source/ra_queue_io.c \
+    retail/arm9/source/ra_queue.c "$RC/src/rhash/md5.c" -o "$RA_HOST_OUT/durability"
+"$RA_HOST_OUT/durability"
+
+for wifi in 0 2; do
+    "$CC" -std=gnu99 -Wall -Wextra -O1 -DRA_LAUNCHER_WIFI=$wifi \
+        -Itools/host-stubs -Iretail/common/include \
+        tools/ra_queue_boot_test.c retail/arm9/source/ra_queue_io.c -o "$RA_HOST_OUT/boot-$wifi"
+    "$RA_HOST_OUT/boot-$wifi"
+done
+
+python3 - "$RA_HOST_OUT/ra_fat_functions.inc" <<'PY'
+import pathlib, sys
+source = pathlib.Path('retail/common/source/my_fat.c').read_text()
+parts = []
+for start, end in [('static inline bool loadSectorBuf(', '\nvoid resetPrevSect'),
+                   ('u32 fileWrite (', '\nvoid buildFatTableCache')]:
+    at = source.index(start)
+    parts.append(source[at:source.index(end, at)])
+pathlib.Path(sys.argv[1]).write_text('\n'.join(parts))
+PY
+"$CC" -std=gnu99 -Wall -Wextra -Wno-sign-compare -O1 \
+    -Itools/host-stubs -I"$RA_HOST_OUT" \
+    tools/ra_fat_fault_test.c -o "$RA_HOST_OUT/fat-fault"
+"$RA_HOST_OUT/fat-fault"

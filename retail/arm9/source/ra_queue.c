@@ -244,6 +244,54 @@ static int skipPadding(const char* text, int at, int length) {
     Duplicates are collapsed. The cardengine should not write one twice, and if it does, awarding it
     twice is not the way to find out.
 */
+
+int raQueueReplyComplete(const char* response, int length, int closedByPeer) {
+    raNetStream stream;
+    if (!response || length <= 0) return 0;
+    raNetStreamReset(&stream, 0, 0);
+    raNetStreamFeed(&stream, response, length);
+    return stream.status == 200 && (stream.chunked ? stream.done
+        : stream.state == RA_NET_STREAM_BODY
+          && (stream.contentLength ? stream.bodyBytes == stream.contentLength : closedByPeer));
+}
+
+typedef struct raQueueReplyBuffer {
+    char* text;
+    int used;
+} raQueueReplyBuffer;
+
+static void queueReplyBody(void* context, const char* data, int length) {
+    raQueueReplyBuffer* out = context;
+    memmove(out->text + out->used, data, (size_t)length);
+    out->used += length;
+}
+
+int raQueueReplyDecode(char* response, int length, int closedByPeer) {
+    raNetStream stream;
+    raQueueReplyBuffer out = {response, 0};
+    if (!raQueueReplyComplete(response, length, closedByPeer)) return 0;
+    raNetStreamReset(&stream, queueReplyBody, &out);
+    raNetStreamFeed(&stream, response, length);
+    response[out.used] = 0;
+    return 1;
+}
+
+int raQueueAwardResult(int transportOk, int success, const char* error) {
+    if (!transportOk) return RA_AWARD_PENDING;
+    if (success) return RA_AWARD_ACCEPTED;
+    if (!error) return RA_AWARD_PENDING;
+    if (!strcmp(error, "User already has this achievement awarded.")
+     || !strcmp(error, "User already has hardcore and regular achievements awarded.")
+     || !strcmp(error, "already unlocked") || !strcmp(error, "Already unlocked")
+     || !strcmp(error, "already earned") || !strcmp(error, "Already earned")
+     || !strcmp(error, "User already unlocked this achievement"))
+        return RA_AWARD_ACCEPTED;
+    if (!strcmp(error, "Unknown achievement") || !strcmp(error, "Unknown achievement ID")
+     || !strcmp(error, "Achievement not found"))
+        return RA_AWARD_REFUSED;
+    return RA_AWARD_PENDING;
+}
+
 void raQueueScan(raQueue* q, const char* text, int length) {
 	int i = 0;
 
@@ -260,6 +308,7 @@ void raQueueScan(raQueue* q, const char* text, int length) {
 		int digits;
 		int j;
 		int seen;
+        int recordStart = i;
 
 		if (text[i] == '#') {
 			while (i < length && text[i] != '\n') {
@@ -460,7 +509,9 @@ void raQueueScan(raQueue* q, const char* text, int length) {
 		if (hardcore) {
 			q->hard++;
 		}
-		q->ids[q->count++] = value;
+		q->terminal[q->count] = (length % RA_QUEUE_RECORD == 0
+            && text[(recordStart / RA_QUEUE_RECORD + 1) * RA_QUEUE_RECORD - 1] == '!');
+        q->ids[q->count++] = value;
 	}
 }
 
@@ -574,6 +625,8 @@ int raQueuePack(const raQueue* q, const int* keep, int keepCount, char* out, int
 			}
 		}
 		record[at++] = '\n';
+        /* Old readers ignore this post-newline byte; current readers retain terminal refusals. */
+        if (q->terminal[from]) record[RA_QUEUE_RECORD - 1] = '!';
 		written++;
 	}
 	return written;

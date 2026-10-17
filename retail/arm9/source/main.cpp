@@ -19,6 +19,7 @@
 #include "nds_loader_arm9.h"
 #include "conf_sd.h"
 #include "ra_wifi.h"
+#include "ra_queue_io.h"
 #include "version.h"
 
 #define REG_SCFG_EXT7 *(u32*)0x02FFFDF0
@@ -545,7 +546,8 @@ static int runNdsFile(configuration* conf) {
 	{
 		struct stat stRaUnlocks;
 
-		if (stat(raUnlocksFilePath.c_str(), &stRaUnlocks) >= 0) {
+		if (raQueueAvailable(raUnlocksFilePath.c_str())
+		 && stat(raUnlocksFilePath.c_str(), &stRaUnlocks) >= 0) {
 			clusterRaUnlocks = stRaUnlocks.st_ino;
 		}
 	}

@@ -12,6 +12,7 @@
 #include "locations.h"
 #include "ra_wifi.h"   /* raPendingBlock -- the tally the launcher staged */
 #include "ra_diagnostics.h"
+#include "ra_unlock.h"
 #include "cardengine_header_arm9.h"
 #include "nds_header.h"
 #include "tonccpy.h"
@@ -677,6 +678,28 @@ static void raPendingPage(void) {
 		}
 	}
 
+    {
+        const raUnlockDiagnostics* const d =
+            (const raUnlockDiagnostics*)CARDENGINEI_ARM9_RA_UNLOCK_LOCATION;
+        if (d->magic == RA_UNLOCK_DIAGNOSTICS_MAGIC
+         && d->version == RA_UNLOCK_DIAGNOSTICS_VERSION && d->size == sizeof(*d)) {
+            const u32 progress = sharedAddr[RA_SHARED_UNLOCK_PROGRESS];
+            const u32 commits = progress >> 16;
+            const u32 drained = (u16)(commits - d->committed);
+            const u32 pending = d->pending > drained ? d->pending - drained : 0;
+            const unsigned status = (progress >> 8) & 255u;
+            print(0, 19, (unsigned char*)"RAM", FONT_WHITE, false);
+            raPrintNum(4, 19, 3, pending, FONT_LIGHT_BLUE);
+            print(9, 19, (unsigned char*)"SD commits", FONT_WHITE, false);
+            raPrintNum(20, 19, 3, commits, FONT_LIME);
+            const char* result = status == RA_UNLOCK_FULL ? "SD queue FULL"
+                : status == RA_UNLOCK_NO_FILE ? "SD file missing"
+                : status == RA_UNLOCK_WRITE_FAILED ? "SD write failed" : "SD append OK";
+            print(0, 20, (unsigned char*)result, status ? FONT_RED : FONT_WHITE, false);
+            print(19, 20, (unsigned char*)"Refused", FONT_WHITE, false);
+            raPrintNum(27, 20, 3, d->refused, FONT_RED);
+        }
+    }
 	print(0, 21, (unsigned char*)"Sent on the next boot with wifi", FONT_DARKER_GRAY, false);
 	print(0, 23, igmText.bNo, FONT_WHITE, false);
 

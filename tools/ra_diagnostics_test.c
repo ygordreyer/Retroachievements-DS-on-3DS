@@ -1,11 +1,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "ra.h"
+#include "ra_wifi.h"
 
 #include "ra_rc_frame.h"
 #include "locations.h"
 
+static vu32 testChannel[CARDENGINE_SHARED_SLOTS];
+#define RA_UNLOCK_CHANNEL(address) testChannel
 static raRcDiagnostics published;
+static raUnlockDiagnostics unlockPublished;
+static raSessionBlock testSession;
+static raViewerBlock testViewer;
+#undef CARDENGINEI_ARM9_RA_UNLOCK_LOCATION
+#define CARDENGINEI_ARM9_RA_UNLOCK_LOCATION (&unlockPublished)
+#undef CARDENGINEI_ARM9_RA_SESSION_LOCATION
+#define CARDENGINEI_ARM9_RA_SESSION_LOCATION (&testSession)
+#undef CARDENGINEI_ARM9_RA_VIEWER_LOCATION
+#define CARDENGINEI_ARM9_RA_VIEWER_LOCATION (&testViewer)
 #undef CARDENGINEI_ARM9_RA_DIAGNOSTICS_LOCATION
 #define CARDENGINEI_ARM9_RA_DIAGNOSTICS_LOCATION (&published)
 #include "../retail/cardenginei/arm9_ra/source/ra_rcheevos.c"
@@ -140,6 +153,42 @@ int main(void) {
     }
     rc_runtime_destroy(&runtime);
     puts("diagnostics: indirect rejection address/trigger latch, visits = frames x triggers, stopped skips passed");
+    {
+        vu32* channel = testChannel;
+        memset((void*)channel, 0, sizeof(testChannel));
+        snapshot.shared = CARDENGINE_SHARED_ADDRESS_SDK1;
+        testSession.magic = RA_SESSION_MAGIC;
+        testSession.queue = RA_QUEUE_LEVEL_FULL;
+        unlockQueued = unlockOffered = unlockSent = unlockLost = 0;
+        unlockHead = unlockTail = 0;
+        for (u32 id = 1; id <= 128; ++id) ra_rc_queue_unlock(id);
+        CHECK(unlockQueued == 128 && unlockLost == 0);
+        ra_rc_offer_unlock(&snapshot);
+        CHECK(channel[RA_SHARED_UNLOCK_ID] == 1 && unlockOffered == 1);
+        CHECK(unlockSent == 0 && unlockPublished.pending == 128);
+        channel[RA_SHARED_UNLOCK_REQ] = 0;
+        channel[RA_SHARED_UNLOCK_PROGRESS] = 1;
+        ra_rc_offer_unlock(&snapshot);
+        CHECK(unlockPublished.accepted == 1 && unlockSent == 0);
+        CHECK(unlockPublished.pending == 128 && unlockOffered == 2);
+        channel[RA_SHARED_UNLOCK_PROGRESS] = 1u << 16;
+        ra_rc_offer_unlock(&snapshot);
+        CHECK(unlockSent == 1 && unlockPublished.pending == 127);
+        while (unlockQueued) {
+            channel[RA_SHARED_UNLOCK_REQ] = 0;
+            ra_rc_offer_unlock(&snapshot);
+        }
+        channel[RA_SHARED_UNLOCK_REQ] = 0;
+        ra_rc_offer_unlock(&snapshot);
+        CHECK(unlockPublished.accepted == 128 && unlockPublished.committed == 1);
+        CHECK(unlockPublished.pending == 127 && unlockLost == 0);
+        channel[RA_SHARED_UNLOCK_PROGRESS] = 128u << 16;
+        ra_rc_offer_unlock(&snapshot);
+        CHECK(unlockSent == 128 && unlockPublished.pending == 0);
+        CHECK(unlockPublished.magic == RA_UNLOCK_DIAGNOSTICS_MAGIC);
+        CHECK(unlockPublished.version == 1 && unlockPublished.size == sizeof(unlockPublished));
+        puts("diagnostics: 128 ARM9 offers stay unsafe after RAM acknowledgment until SD commit sequence advances");
+    }
     printf("diagnostics: PASSED (%u checks)\n", checks);
     return 0;
 }

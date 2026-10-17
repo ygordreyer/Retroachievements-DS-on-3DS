@@ -33,6 +33,9 @@
 */
 
 #include "ra_wifi.h"
+#include "ra_queue_io.h"
+#include "ra_unlock.h"
+#include <errno.h>
 
 #if RA_LAUNCHER_WIFI
 
@@ -1139,15 +1142,8 @@ static void raWifiStartSession(const raConfig* cfg) {
     that never drains. Sending first means the very next rung sees it in the account's unlocks and the
     scanner leaves it out.
 
-    **An answer clears the record; silence keeps it.** The rule is about who has seen the id, not about
-    whether they liked it. A server that answered has the unlock (RA returns Success for an
-    already-unlocked achievement, and an error for one it will always refuse), so retrying forever
-    would only spam it. A request that never got an answer proved nothing, so that id is still owed and
-    survives into the next boot. Every refusal is logged with the server's own body -- the whole point
-    of a queue is that nothing disappears quietly.
-
-    **The file is rewritten in place, same length.** Truncating it could hand its clusters back, and
-    the cardengine half of this can only write into clusters that already exist.
+    Accepted awards are removed; all other results remain, with terminal refusals marked.
+    Replacement is journaled through ra_queue_io.c.
 */
 /*
     `hardcore` is the record's own, not the configuration's, and that distinction is the whole point
@@ -1168,7 +1164,7 @@ static void raWifiStartSession(const raConfig* cfg) {
     longer takes the config at all. It used to, for this one field, and losing the parameter is the
     clearest statement available that the file no longer has a say here.
 */
-static void raWifiSubmitOne(u32 id, u32 when, int hardcore, raQueue* q) {
+static void raWifiSubmitOne(u32 id, u32 when, int hardcore, raQueue* q, int index) {
 	static char   response[1024];
 	char          user[3 * sizeof(raUser)];
 	char          path[384];
@@ -1245,49 +1241,36 @@ static void raWifiSubmitOne(u32 id, u32 when, int hardcore, raQueue* q) {
 	memset(&p, 0, sizeof(p));
 	got = raNetHttpGet(RA_NET_HOST, path, response, sizeof(response), &p);
 	raWifiReportAttempts("award", &p);
-	if (got < 0) {
+	if (got < 0 || !raQueueReplyDecode(response, got, p.closedByPeer)) {
 		/*
-		    Nobody saw it. Kept, and said out loud rather than folded into a total, because "the
-		    network dropped one" and "the server refused one" are different problems.
+		    A timeout can follow server acceptance; keep the record for an idempotent retry.
 		*/
-		raWifiLog("\x1b[33m  %lu  not sent (step %d), still owed\x1b[37m\n",
+		raWifiLog("\x1b[33m  %lu  reply incomplete or HTTP error (%d), still owed\x1b[37m\n",
 		          (unsigned long)id, -got);
 		q->kept++;
 		return;
 	}
 
-	q->sent++;
-	if (raNetJsonTrue(response, "Success")) {
-		q->accepted++;
-		raWifiLog("\x1b[32m  %lu  awarded\x1b[37m\n", (unsigned long)id);
-		/*
-		    Logged on *success* too, and that is not verbosity. The first accepted award read
-		    `93119 awarded` and the very next rung still reported one unlock, the server's own
-		    notice -- so Success:true and the account holding the achievement are not the same
-		    statement, and a one-word summary cannot tell them apart. The reply carries
-		    AchievementID, Score and AchievementsRemaining; those are what say whether anything
-		    was recorded. See docs/retroachievements.md.
-		*/
-		raWifiLogBody("award reply", raNetBody(response));
-		return;
-	}
-
-	/*
-	    Answered and not accepted. Cleared anyway -- see the rule above -- and the server's own words
-	    go in the log, because this is the one place where its reply is the only thing that can say
-	    whether the id was wrong, the signature was wrong, or it was already held.
-	*/
-	q->refused++;
-	{
-		char error[160];
-
-		if (raNetJsonString(response, "Error", error, sizeof(error))) {
-			raWifiLog("\x1b[33m  %lu  refused: %s\x1b[37m\n", (unsigned long)id, error);
-		} else {
-			raWifiLog("\x1b[33m  %lu  refused\x1b[37m\n", (unsigned long)id);
-		}
-		raWifiLogBody("award reply", raNetBody(response));
-	}
+    {
+        char error[160] = {0};
+        int result;
+        raNetJsonString(response, "Error", error, sizeof(error));
+        result = raQueueAwardResult(1, raNetJsonTrue(response, "Success"), error);
+        q->sent++;
+        if (result == RA_AWARD_ACCEPTED) {
+            q->accepted++;
+            raWifiLog("  %lu awarded or already unlocked\n", (unsigned long)id);
+        } else {
+            q->kept++;
+            if (result == RA_AWARD_REFUSED) {
+                q->terminal[index] = 1;
+                q->refused++;
+            }
+            raWifiLog("  %lu %s: %s\n", (unsigned long)id,
+                      result == RA_AWARD_REFUSED ? "refused, retained" : "pending", error);
+        }
+        raWifiLogBody("award reply", raNetBody(response));
+    }
 }
 
 /*
@@ -1320,34 +1303,45 @@ static void raWifiSubmitQueue(const raConfig* cfg, bool sdFound) {
 
 	memset(&q, 0, sizeof(q));
 
+    if (!raQueueAvailable(path)) {
+        raWifiLog("queue recovery failed; submission deferred\n");
+        return;
+    }
 	f = fopen(path, "rb");
 	if (!f) {
+        if (errno != ENOENT) {
+            raWifiLog("queue open failed; retained without submission\n");
+            return;
+        }
 		/*
 		    No queue file is the normal state of a fresh install, and it is also what the cardengine
 		    needs created for it: it can write into clusters that exist and cannot allocate any. So
 		    the file is made here, full length, zero filled -- and this boot has nothing to send.
 		*/
-		f = fopen(path, "wb");
-		if (!f) {
-			raWifiLog("\x1b[33mno %s and it could not be created\x1b[37m\n", path);
-			return;
-		}
-		memset(file, 0, sizeof(file));
-		got = fwrite(file, 1, sizeof(file), f);
-		fclose(f);
-		if (got != sizeof(file)) {
-			raWifiLog("\x1b[33m%s is short -- the card refused a write\x1b[37m\n", path);
-			return;
-		}
+        memset(file, 0, sizeof(file));
+        if (!raQueueReplace(path, file, sizeof(file), &raQueueStdFileOps)) {
+            raWifiLog("queue creation failed\n");
+            return;
+        }
 		verdict.submitDone = 1;
 		raWifiLog("queue            created, %d bytes, nothing owed\n", (int)sizeof(file));
 		return;
 	}
 
-	got = fread(file, 1, sizeof(file), f);
-	fclose(f);
+    got = fread(file, 1, sizeof(file), f);
+    int readBad = ferror(f) || (got == sizeof(file) && fgetc(f) != EOF);
+    if (fclose(f)) readBad = 1;
+    if (readBad) {
+        raWifiLog("queue read failed or oversized; retained without submission\n");
+        return;
+    }
 
 	raQueueScan(&q, file, (int)got);
+    if (q.dropped || q.truncated) {
+        raWifiLog("queue contains unusable records; retained without submission\n");
+        verdict.submitKept = (u16)q.count;
+        return;
+    }
 	if (q.count == 0) {
 		/*
 		    Read, and empty. A successful pass over the queue, which is why it counts as reaching the
@@ -1385,21 +1379,11 @@ static void raWifiSubmitQueue(const raConfig* cfg, bool sdFound) {
 		    the queue reads as empty, so nothing below would ever clear it, and the record would sit
 		    there being counted by the in-game menu on every future boot.
 		*/
-		if (got != sizeof(file) || q.synthetic) {
-			FILE* resize = fopen(path, "wb");
-
-			if (resize) {
-				const int was = (int)got;
-
-				memset(file, 0, sizeof(file));
-				got = fwrite(file, 1, sizeof(file), resize);
-				fclose(resize);
-				raWifiLog("queue            rewritten, %d bytes (was %d)\n", (int)got, was);
-			} else {
-				raWifiLog("\x1b[33mqueue is %d bytes, not %d, and could not be rewritten\x1b[37m\n",
-				          (int)got, (int)sizeof(file));
-			}
-		}
+        if (got != sizeof(file) || q.synthetic) {
+            memset(file, 0, sizeof(file));
+            if (!raQueueReplace(path, file, sizeof(file), &raQueueStdFileOps))
+                raWifiLog("queue resize failed\n");
+        }
 		return;
 	}
 
@@ -1438,7 +1422,12 @@ static void raWifiSubmitQueue(const raConfig* cfg, bool sdFound) {
 	for (i = 0; i < q.count; i++) {
 		const int before = q.kept;
 
-		raWifiSubmitOne(q.ids[i], q.times[i], q.hardcore[i], &q);
+		if (q.terminal[i]) {
+            q.kept++;
+            q.refused++;
+        } else {
+            raWifiSubmitOne(q.ids[i], q.times[i], q.hardcore[i], &q, i);
+        }
 		if (q.kept > before) {
 			keep[keepCount++] = i;
 		}
@@ -1468,16 +1457,8 @@ static void raWifiSubmitQueue(const raConfig* cfg, bool sdFound) {
 		raWifiLog("\x1b[31mthe queue could not be packed; %s left alone\x1b[37m\n", path);
 		return;
 	}
-	f = fopen(path, "rb+");
-	if (!f) {
-		raWifiLog("\x1b[33mcould not rewrite %s; ids may be sent twice\x1b[37m\n", path);
-		return;
-	}
-	got = fwrite(file, 1, sizeof(file), f);
-	fclose(f);
-	if (got != sizeof(file)) {
-		raWifiLog("\x1b[33m%s is short -- ids may be sent twice\x1b[37m\n", path);
-	}
+    if (!raQueueReplace(path, file, sizeof(file), &raQueueStdFileOps))
+        raWifiLog("queue replacement incomplete; recovery required next boot\n");
 }
 
 /*
@@ -1501,6 +1482,11 @@ static void raWifiStagePending(bool sdFound, const char* ndsPath) {
 	memset(&q, 0, sizeof(q));
 	memset(file, 0, sizeof(file));
 
+    if (!raQueueAvailable(path)) {
+        block->magic = 0;
+        raWifiLog("queue recovery failed; pending tally unavailable\n");
+        return;
+    }
 	f = fopen(path, "rb");
 	if (f) {
 		got = fread(file, 1, sizeof(file), f);
@@ -1508,6 +1494,15 @@ static void raWifiStagePending(bool sdFound, const char* ndsPath) {
 	}
 	raQueueScan(&q, file, (int)got);
 	raQueueTally(&q, (u32)time(NULL), block);
+    {
+        raUnlockDiagnostics* const d = (raUnlockDiagnostics*)
+            (CARDENGINEI_ARM9_RA_SESSION_BUFFERED_LOCATION + 0x40);
+        memset(d, 0, sizeof(*d));
+        d->magic = RA_UNLOCK_DIAGNOSTICS_MAGIC;
+        d->version = RA_UNLOCK_DIAGNOSTICS_VERSION;
+        d->size = sizeof(*d);
+        for (int i = 0; i < q.count; ++i) d->refused += q.terminal[i] != 0;
+    }
 
 	/*
 	    Which game is about to start, read from the first sixteen bytes of its own header -- the same
@@ -2359,6 +2354,7 @@ static void raWifiStageSession(int hardcore, u8 refusal, int overlay, u8 queue, 
 	block->queue    = queue;
 	block->rcStage  = RA_RC_NONE;
 	*(u32*)CARDENGINEI_ARM9_RA_DIAGNOSTICS_BUFFERED_LOCATION = 0;
+    *(u32*)(CARDENGINEI_ARM9_RA_SESSION_BUFFERED_LOCATION + 0x40) = 0;
 	block->magic = RA_SESSION_MAGIC;
 
 	raWifiLog("in-game menu     RAM editing %s\n",

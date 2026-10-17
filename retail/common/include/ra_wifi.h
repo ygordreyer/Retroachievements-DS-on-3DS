@@ -200,13 +200,14 @@
 
     The record has grown twice for this, 16 -> 32 for the stamp and 32 -> 48 for the game, and the file
     with it. It migrates itself: the launcher reads whatever length it finds and always writes
-    RA_QUEUE_BYTES back, so the first boot on a new build extends the file in place.
+    RA_QUEUE_BYTES back, so the first boot on a new build extends the file through a journaled replacement.
 */
 #define RA_QUEUE_PATH          "sd:/ra_unlocks.txt"
 #define RA_QUEUE_PATH_FAT      "fat:/ra_unlocks.txt"
 /*
     <id>\t<stamp>\t<code>\t<title>\t<h>\n is 10+1+14+1+4+1+12+1+1+1 = 46 at its longest. ASCII,
-    NUL-padded. The record was already 48 when the mode field went in, so unlike the stamp and the
+    NUL-padded. Byte 47 is ! for a retained terminal refusal, otherwise NUL.
+    The record was already 48 when the mode field went in, so unlike the stamp and the
     game before it this one cost no migration -- every card in the field was already the right size.
 */
 #define RA_QUEUE_RECORD        48
@@ -488,6 +489,7 @@ typedef struct raQueue {
 	    to keep meaning exactly one thing.
 	*/
 	u8   hardcore[RA_QUEUE_MAX];
+	u8   terminal[RA_QUEUE_MAX];
 	int  stamped;            /* how many of those carried a usable stamp */
 	int  hard;               /* how many of those were earned in hardcore */
 	int  named;              /* how many of those named their game */
@@ -1321,6 +1323,10 @@ void raPatchFinish(raPatch* p);
     the server with a message that does not say "your hash is wrong", so it is pinned against digests
     computed by coreutils rather than by this code.
 */
+enum { RA_AWARD_PENDING, RA_AWARD_ACCEPTED, RA_AWARD_REFUSED };
+int raQueueReplyDecode(char* response, int length, int closedByPeer);
+int raQueueReplyComplete(const char* response, int length, int closedByPeer);
+int raQueueAwardResult(int transportOk, int success, const char* error);
 void raQueueScan(raQueue* q, const char* text, int length);
 /*
     `keep` is indices into `q`, not ids, so a record keeps everything it arrived with -- its stamp and

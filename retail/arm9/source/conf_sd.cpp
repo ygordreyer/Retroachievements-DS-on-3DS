@@ -33,6 +33,7 @@
 #include "locations.h"
 /* Step 3b: RA_QUEUE_PATH and RA_QUEUE_BYTES, which are defined whether or not the WiFi switch is on. */
 #include "ra_wifi.h"
+#include "ra_queue_io.h"
 #include "version.h"
 
 #include "nandio.h"
@@ -804,10 +805,22 @@ void getIgmStrings(configuration* conf, bool b4ds) {
 	}
 }
 
+static void recoverUnlockQueue(const char* path, const char* logPath) {
+	if (raQueueBootRecover(path)) return;
+	nocashMessage("RA queue recovery failed; game queue disabled (NO_FILE)");
+	FILE* log = fopen(logPath, "wb");
+	if (log) {
+		fprintf(log, "Queue recovery failed: %s; game queue disabled (RA_UNLOCK_NO_FILE)\n", path);
+		fclose(log);
+	}
+}
+
 int loadFromSD(configuration* conf, const char *bootstrapPath) {
 	int rc = 0;
-	fatMountSimple("sd", &__my_io_dsisd);
-	fatMountSimple("fat", dldiGetInternal());
+	if (fatMountSimple("sd", &__my_io_dsisd))
+		recoverUnlockQueue(RA_QUEUE_PATH, "sd:/ra_queue_recovery.log");
+	if (fatMountSimple("fat", dldiGetInternal()))
+		recoverUnlockQueue(RA_QUEUE_PATH_FAT, "fat:/ra_queue_recovery.log");
 
 	conf->sdFound = (access("sd:/", F_OK) == 0);
 	const bool flashcardFound = (access("fat:/", F_OK) == 0);
@@ -2784,7 +2797,8 @@ int loadFromSD(configuration* conf, const char *bootstrapPath) {
 	    and truncating it would throw them away.
 	*/
 	raUnlocksFilePath = conf->gameOnFlashcard ? RA_QUEUE_PATH_FAT : RA_QUEUE_PATH;
-	if (getFileSize(raUnlocksFilePath.c_str()) != RA_QUEUE_BYTES) {
+	if (raQueueAvailable(raUnlocksFilePath.c_str())
+	 && getFileSize(raUnlocksFilePath.c_str()) != RA_QUEUE_BYTES) {
 		FILE* queueFile = fopen(raUnlocksFilePath.c_str(), "wb");
 
 		if (queueFile) {

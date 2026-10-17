@@ -233,6 +233,8 @@ typedef struct raResult {
     frame and a set does not fire two achievements in the same frame often enough to matter. The ARM9
     side keeps the rest in its own queue and offers one per frame.
 */
+#include "ra_unlock.h"
+
 #define RA_SHARED_UNLOCK_REQ   9
 #define RA_SHARED_UNLOCK_ID    10
 #define RA_SHARED_UNLOCK_MAGIC 0x4C554152u   /* 'RAUL' -- softcore */
@@ -240,7 +242,7 @@ typedef struct raResult {
     And the same request from a hardcore session. **The mode rides in the magic rather than in a slot
     of its own**, and that is a deliberate trade rather than a squeeze.
 
-    Slots 11 and 12 are free and either would hold a flag. There are only four slots in total, two of
+    Slots 11 and 12 carry queue level and ARM7 progress. There are only four slots in total, two of
     them already spent here, and spending a third on one bit would leave this feature holding half of
     everything the ARM9 will ever be able to say to the ARM7. The magic is already a word the ARM7
     compares against a constant, so a second constant costs one more compare and no address space.
@@ -624,11 +626,11 @@ typedef struct raSnapshot {
 	u32 shared;           /* +0xA8  CARDENGINE_SHARED_ADDRESS_* for this game, 0 if unknown */
 	/*
 	    ...and what crossing it has done, because the RAM viewer is the only debug channel in here.
-	    `unlockSent` is what reached the ARM7; `unlockLost` is what the ring dropped, which must never
+	    `unlockSent` counts SD commits; `unlockLost` is what the ring dropped, which must never
 	    be a number nobody can see.
 	*/
-	u16 unlockSent;       /* +0xAC  ids handed to the ARM7 */
-	u8  unlockQueued;     /* +0xAE  still waiting in the ring */
+	u16 unlockSent;       /* +0xAC  SD commit acknowledgments */
+	u8  unlockQueued;     /* +0xAE  RAM entries not yet committed */
 	u8  unlockLost;       /* +0xAF  fired while the ring was full */
 	/*
 	    How often the per-frame hook had to be put back, and *which* part of it was gone.
