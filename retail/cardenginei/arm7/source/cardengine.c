@@ -508,6 +508,7 @@ void reset(const bool downloadedSrl) {
 	register int i, reg;
 
 #ifndef TWLSDK
+	raUnlockDrainExit();
 	u32 resetParam = ((valueBits & isSdk5) ? RESET_PARAM_SDK5 : RESET_PARAM);
 	if (((valueBits & isDlp) && *(u32*)(NDS_HEADER_SDK5+0xC) == 0) || (valueBits & slowSoftReset) || (*(u32*)(resetParam+0xC) > 0 && (valueBits & isSdk5))) {
 		REG_MASTER_VOLUME = 0;
