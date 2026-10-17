@@ -23,6 +23,15 @@ done
     "$RC/src/rhash/md5.c" -lm -pthread -o "$RA_HOST_OUT/cadence"
 "$RA_HOST_OUT/cadence"
 
+"$CC" -std=gnu99 -Wall -Wextra -Wno-unused-function \
+    -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -O1 \
+    -Itools/host-stubs -Iretail/common/include -Iretail/cardenginei/arm9_ra/include \
+    -I"$RC/include" -I"$RC/src" \
+    tools/ra_diagnostics_test.c retail/cardenginei/arm9_ra/source/ra_rc_frame.c \
+    "$@" "$RC/src/rc_util.c" "$RC/src/rc_compat.c" "$RC/src/rc_version.c" \
+    "$RC/src/rhash/md5.c" -lm -pthread -o "$RA_HOST_OUT/diagnostics"
+"$RA_HOST_OUT/diagnostics"
+
 "$CC" -std=gnu99 -Wall -O1 \
     -DRA_LAUNCHER_WIFI=1 -DRC_HASH_NO_DISC -DRC_HASH_NO_ENCRYPTED -DRC_HASH_NO_ZIP \
     -Dsniprintf=snprintf \

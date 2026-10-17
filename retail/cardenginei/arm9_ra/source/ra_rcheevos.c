@@ -81,8 +81,7 @@ extern void ra_watch_clear(void);
     game programmed into CP15 c9,c1 -- so there is no constant to map it to, and a guess
     would read real memory belonging to something else and produce values that look
     plausible. An achievement that reads DTCM is reported as unsupported instead, which
-    shows up as rcPeeksRejected and as the achievement being disabled rather than as a
-    wrong unlock.
+    is recorded in the diagnostics block as a disabled achievement.
 */
 #define RA_DS_SYSTEM_RAM_BASE 0x02000000
 #define RA_DS_SYSTEM_RAM_SIZE 0x00400000
@@ -230,6 +229,16 @@ static uint16_t ra_rc_frame_clock(void* userdata) {
 	return RA_VCOUNT;
 }
 
+static void ra_rc_publish_diagnostics(void) {
+	raRcDiagnostics* const block =
+		(raRcDiagnostics*)CARDENGINEI_ARM9_RA_DIAGNOSTICS_LOCATION;
+
+	frameState.diagnostics.version = RA_DIAGNOSTICS_VERSION;
+	frameState.diagnostics.size = sizeof(raRcDiagnostics);
+	*block = frameState.diagnostics;
+	block->magic = RA_DIAGNOSTICS_MAGIC;
+}
+
 /*
     128, raised from 8 when `r=patch` arrived.
 
@@ -355,6 +364,12 @@ static uint32_t ra_rc_peek(uint32_t consoleAddress, uint32_t numBytes, void* ud)
 	peeksThisFrame++;
 
 	if (address == 0 || !ra_readable(address, numBytes)) {
+		if (frameState.diagnostics.rejected_reads == 0) {
+			frameState.diagnostics.first_rejected_address = consoleAddress;
+			frameState.diagnostics.first_rejected_trigger = frameState.current_trigger_id;
+		}
+		if (frameState.diagnostics.rejected_reads != 0xFFFFFFFFu)
+			++frameState.diagnostics.rejected_reads;
 		peeksRejected++;
 		return 0;
 	}
@@ -681,6 +696,9 @@ static void ra_rc_offer_unlock(raSnapshot* snapshot) {
 
 static void ra_rc_event_handler(const rc_runtime_event_t* runtimeEvent) {
 	eventCount++;
+	if (runtimeEvent->type == RC_RUNTIME_EVENT_ACHIEVEMENT_DISABLED) {
+		ra_rc_record_disabled(&frameState, runtimeEvent->id, (u32)runtimeEvent->value);
+	}
 	if (runtimeEvent->type == RC_RUNTIME_EVENT_ACHIEVEMENT_TRIGGERED) {
 		triggeredCount++;
 		/*
@@ -1470,7 +1488,7 @@ static u8 ra_rc_activate_next(raSnapshot* snapshot) {
 	/*
 	    Ask rcheevos to check every address the set ended up referencing, now, against what this
 	    console has. rcheevos disables any achievement that names one it cannot supply, so this
-	    is what turns "an achievement silently never fires" into rcPeeksRejected.
+	    is what reports disabled IDs and addresses without requiring a rejected runtime read.
 
 	    Done once, here, and deliberately after the last definition rather than after each one:
 	    it walks the whole memref pool, so per-definition it would be O(n squared) over a pool
@@ -1554,6 +1572,8 @@ void ra_rc_tick(raSnapshot* snapshot) {
 		}
 		snapshot->rcStage = rcStage;
 		if (rcStage < RA_RC_ACTIVE) {
+			ra_rc_frame_run(&frameState, 0, 0, 0, 0, 0, 0);
+			ra_rc_publish_diagnostics();
 			return;
 		}
 	}
@@ -1561,6 +1581,7 @@ void ra_rc_tick(raSnapshot* snapshot) {
 	peeksThisFrame = 0;
 
 	rcStage = ra_rc_step(ra_rc_frame_step, snapshot);
+	ra_rc_publish_diagnostics();
 	{
 		raSessionBlock* const session =
 			(raSessionBlock*)CARDENGINEI_ARM9_RA_SESSION_LOCATION;

@@ -81,7 +81,7 @@ static void activate(rc_runtime_t* runtime, unsigned count, const char* suffix) 
         /* Delta's second operand references the same per-trigger address. */
         if (strcmp(suffix, "=1_d0xH000000=0") == 0)
             snprintf(definition, sizeof(definition), "0xH%06x=1_d0xH%06x=0", i, i);
-        CHECK(rc_runtime_activate_achievement(runtime, i + 1, definition, 0, 0) == 0);
+        CHECK(rc_runtime_activate_achievement(runtime, RA_SYNTHETIC_ID_BASE + i, definition, 0, 0) == 0);
     }
     CHECK(runtime->trigger_count == count);
 }
@@ -134,10 +134,14 @@ static void cadence(unsigned count, unsigned scenario) {
         CHECK(!state.unsupported && !state.overruns);
         CHECK(clock.calls == (clock.intervals + 1) * (frame + 1));
         CHECK(state.cost == clock.cost);
+        CHECK(state.diagnostics.frames_evaluated == frame + 1);
+        CHECK(state.diagnostics.frames_not_evaluated == 0);
+        CHECK(state.diagnostics.active_triggers == count);
+        CHECK(state.diagnostics.trigger_evaluations == (frame + 1) * count);
         compare_events();
         for (i = 0; i < count; ++i) {
-            const rc_trigger_t* at = rc_runtime_get_achievement(&actual, i + 1);
-            const rc_trigger_t* rt = rc_runtime_get_achievement(&reference, i + 1);
+            const rc_trigger_t* at = rc_runtime_get_achievement(&actual, RA_SYNTHETIC_ID_BASE + i);
+            const rc_trigger_t* rt = rc_runtime_get_achievement(&reference, RA_SYNTHETIC_ID_BASE + i);
             CHECK(at && rt);
             CHECK(at->state == rt->state);
             compare_hits(at->requirement, rt->requirement);
@@ -205,8 +209,14 @@ static void budget(void) {
         const unsigned reads = memory.reads[0], calls = clock.calls, events = actual_events.count;
         clock.cost = 0;
         clock.start = 0;
-        for (i = 0; i < 100; ++i)
+        const uint32_t evaluated = state.diagnostics.frames_evaluated;
+        CHECK(state.diagnostics.frames_not_evaluated == 0);
+        for (i = 0; i < 100; ++i) {
             CHECK(!ra_rc_frame_run(&state, &runtime, actual_event, peek, &memory, scanline, &clock));
+            CHECK(state.diagnostics.frames_not_evaluated == i + 1);
+            CHECK(state.diagnostics.frames_evaluated == evaluated);
+            CHECK(state.diagnostics.trigger_evaluations == evaluated);
+        }
         CHECK(memory.reads[0] == reads && clock.calls == calls && actual_events.count == events);
         CHECK(state.unsupported && state.overruns == RA_RC_OVERRUN_LIMIT);
         CHECK(state.cost == 101 && state.room == 71);
@@ -344,6 +354,9 @@ static void disabled_and_null(void) {
         CHECK(state.other_transitions == 2);
         CHECK(!actual.triggers[0].invalid_memref && !reference.triggers[0].invalid_memref);
         CHECK(actual.triggers[0].trigger->state == RC_TRIGGER_STATE_DISABLED);
+        CHECK(state.diagnostics.disabled_count == 1);
+        CHECK(state.diagnostics.first_disabled_id == RA_SYNTHETIC_ID_BASE);
+        CHECK(state.diagnostics.first_disabled_address == 0);
         CHECK(a.reads[0] == 0 && r.reads[0] == 0);
         for (i = 0; i < 2; ++i) {
             CHECK(actual.triggers[i].trigger->state == reference.triggers[i].trigger->state);
@@ -379,6 +392,25 @@ int main(void) {
     CHECK(offsetof(raSnapshot, notifyTitle) == 0xEC);
     CHECK(offsetof(raSessionBlock, rcStage) == 8);
     CHECK(sizeof(raSessionBlock) <= CARDENGINEI_ARM9_RA_SESSION_MAX);
+    CHECK(sizeof(raRcDiagnostics) == 0x30);
+    CHECK(offsetof(raRcDiagnostics, magic) == 0x00);
+    CHECK(offsetof(raRcDiagnostics, version) == 0x04);
+    CHECK(offsetof(raRcDiagnostics, size) == 0x06);
+    CHECK(offsetof(raRcDiagnostics, disabled_count) == 0x08);
+    CHECK(offsetof(raRcDiagnostics, first_disabled_id) == 0x0C);
+    CHECK(offsetof(raRcDiagnostics, first_disabled_address) == 0x10);
+    CHECK(offsetof(raRcDiagnostics, rejected_reads) == 0x14);
+    CHECK(offsetof(raRcDiagnostics, first_rejected_address) == 0x18);
+    CHECK(offsetof(raRcDiagnostics, first_rejected_trigger) == 0x1C);
+    CHECK(offsetof(raRcDiagnostics, frames_evaluated) == 0x20);
+    CHECK(offsetof(raRcDiagnostics, frames_not_evaluated) == 0x24);
+    CHECK(offsetof(raRcDiagnostics, trigger_evaluations) == 0x28);
+    CHECK(offsetof(raRcDiagnostics, active_triggers) == 0x2C);
+    CHECK(CARDENGINEI_ARM9_RA_DIAGNOSTICS_LOCATION == 0x0377F310);
+    CHECK(CARDENGINEI_ARM9_RA_DIAGNOSTICS_LOCATION >= CARDENGINEI_ARM9_RA_SESSION_LOCATION + sizeof(raSessionBlock));
+    CHECK(CARDENGINEI_ARM9_RA_DIAGNOSTICS_LOCATION + sizeof(raRcDiagnostics)
+        <= CARDENGINEI_ARM9_RA_SESSION_LOCATION + CARDENGINEI_ARM9_RA_SESSION_MAX);
+    CHECK(sizeof(raRcDiagnostics) <= CARDENGINEI_ARM9_RA_DIAGNOSTICS_MAX);
     for (i = 0; i < sizeof(sizes) / sizeof(sizes[0]); ++i)
         for (scenario = 0; scenario < 7; ++scenario)
             cadence(sizes[i], scenario);

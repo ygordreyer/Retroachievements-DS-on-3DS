@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include "rc_runtime.h"
+#include "ra_diagnostics.h"
 
 #define RA_RC_OVERRUN_LIMIT 30
 #define RA_RC_SCANLINES_PER_FRAME 263
@@ -10,6 +11,8 @@
 #define RA_RC_CLOCK_STRIDE 8
 
 typedef struct raRcFrameState {
+    raRcDiagnostics diagnostics;
+    uint32_t current_trigger_id;
     uint16_t cost;
     uint16_t room;
     uint16_t cost_max;
@@ -22,7 +25,10 @@ typedef struct raRcFrameState {
 
 typedef uint16_t (*raRcFrameClock)(void* userdata);
 
-/* Zero-initialize once per session. Only TRIGGERED transitions call the handler;
+void ra_rc_record_disabled(raRcFrameState* state, uint32_t id, uint32_t address);
+
+/* Zero-initialize once per session. NULL runtime counts a pre-activation frame.
+ * Only TRIGGERED transitions call the handler;
  * other_transitions counts the remaining evaluation state transitions in the last frame.
  * Unsupported is latched until the session ends.
  * Room ends at line 263 for blanking starts, or at line 192 for late starts.

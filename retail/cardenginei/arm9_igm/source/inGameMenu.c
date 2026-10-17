@@ -11,6 +11,7 @@
 #include "igm_text.h"
 #include "locations.h"
 #include "ra_wifi.h"   /* raPendingBlock -- the tally the launcher staged */
+#include "ra_diagnostics.h"
 #include "cardengine_header_arm9.h"
 #include "nds_header.h"
 #include "tonccpy.h"
@@ -971,6 +972,8 @@ static void raAchievementsPage(void) {
 */
 static void raSessionLine(int row) {
 	const raSessionBlock* const s = (const raSessionBlock*)CARDENGINEI_ARM9_RA_SESSION_LOCATION;
+	const raRcDiagnostics* const d =
+		(const raRcDiagnostics*)CARDENGINEI_ARM9_RA_DIAGNOSTICS_LOCATION;
 
 	if (s->magic != RA_SESSION_MAGIC) {
 		/*
@@ -992,6 +995,29 @@ static void raSessionLine(int row) {
 	} else {
 		print(1, row, (unsigned char*)"Softcore", FONT_LIGHT_GRAY, false);
 	}
+	if (s->magic != RA_SESSION_MAGIC || d->magic != RA_DIAGNOSTICS_MAGIC
+	    || d->version != RA_DIAGNOSTICS_VERSION || d->size != sizeof(*d))
+		return;
+	print(1, row - 6, (unsigned char*)"Disabled", FONT_LIGHT_GRAY, false);
+	raPrintNum(10, row - 6, 3, d->disabled_count, FONT_WHITE);
+	print(14, row - 6, (unsigned char*)"ID", FONT_LIGHT_GRAY, false);
+	printHex(17, row - 6, d->first_disabled_id, 4, FONT_WHITE, false);
+	print(1, row - 5, (unsigned char*)"Bad addr", FONT_LIGHT_GRAY, false);
+	printHex(10, row - 5, d->first_disabled_address, 4, FONT_WHITE, false);
+	print(1, row - 4, (unsigned char*)"Rejected", FONT_LIGHT_GRAY, false);
+	raPrintNum(10, row - 4, 10, d->rejected_reads, FONT_WHITE);
+	print(1, row - 3, (unsigned char*)"At", FONT_LIGHT_GRAY, false);
+	printHex(4, row - 3, d->first_rejected_address, 4, FONT_WHITE, false);
+	print(13, row - 3, (unsigned char*)"ID", FONT_LIGHT_GRAY, false);
+	printHex(16, row - 3, d->first_rejected_trigger, 4, FONT_WHITE, false);
+	print(1, row - 2, (unsigned char*)"Eval", FONT_LIGHT_GRAY, false);
+	raPrintNum(6, row - 2, 10, d->frames_evaluated, FONT_WHITE);
+	print(17, row - 2, (unsigned char*)"Skip", FONT_LIGHT_GRAY, false);
+	raPrintNum(22, row - 2, 10, d->frames_not_evaluated, FONT_WHITE);
+	print(1, row - 1, (unsigned char*)"Visits", FONT_LIGHT_GRAY, false);
+	raPrintNum(8, row - 1, 10, d->trigger_evaluations, FONT_WHITE);
+	print(19, row - 1, (unsigned char*)"Triggers", FONT_LIGHT_GRAY, false);
+	raPrintNum(28, row - 1, 3, d->active_triggers, FONT_WHITE);
 }
 
 /*

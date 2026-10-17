@@ -1,6 +1,14 @@
 #include "ra_rc_frame.h"
 #include "rcheevos/rc_internal.h"
 
+void ra_rc_record_disabled(raRcFrameState* state, uint32_t id, uint32_t address) {
+    if (state->diagnostics.disabled_count == 0) {
+        state->diagnostics.first_disabled_id = id;
+        state->diagnostics.first_disabled_address = address;
+    }
+    ++state->diagnostics.disabled_count;
+}
+
 static void ra_rc_sample_clock(raRcFrameState* state, raRcFrameClock clock,
                                void* userdata, uint16_t* previous) {
     uint16_t now = clock(userdata);
@@ -19,6 +27,8 @@ static void ra_rc_do_frame(raRcFrameState* state, rc_runtime_t* runtime,
     unsigned clock_triggers = 0;
 
     state->other_transitions = 0;
+    state->current_trigger_id = 0;
+    state->diagnostics.active_triggers = 0;
     event.value = 0;
     rc_update_memref_values(runtime->memrefs, peek, userdata);
     ra_rc_sample_clock(state, clock, clock_userdata, previous);
@@ -29,9 +39,14 @@ static void ra_rc_do_frame(raRcFrameState* state, rc_runtime_t* runtime,
         if (!trigger)
             goto checkpoint;
 
+        ++state->diagnostics.active_triggers;
+        ++state->diagnostics.trigger_evaluations;
+        state->current_trigger_id = runtime->triggers[i].id;
         old_state = trigger->state;
         if (runtime->triggers[i].invalid_memref) {
             /* Match v12.4.0's disable bookkeeping without evaluating invalid memory. */
+            ra_rc_record_disabled(state, runtime->triggers[i].id,
+                runtime->triggers[i].invalid_memref->address);
             trigger->state = RC_TRIGGER_STATE_DISABLED;
             runtime->triggers[i].invalid_memref = NULL;
             new_state = trigger->state;
@@ -58,6 +73,7 @@ checkpoint:
             clock_triggers = 0;
         }
     }
+    state->current_trigger_id = 0;
     ra_rc_sample_clock(state, clock, clock_userdata, previous);
 }
 
@@ -66,8 +82,10 @@ int ra_rc_frame_run(raRcFrameState* state, rc_runtime_t* runtime,
                     void* peek_userdata, raRcFrameClock clock, void* clock_userdata) {
     uint16_t start, previous;
 
-    if (state->unsupported)
+    if (!runtime || state->unsupported) {
+        ++state->diagnostics.frames_not_evaluated;
         return 0;
+    }
 
     start = clock(clock_userdata);
     previous = start;
@@ -78,6 +96,7 @@ int ra_rc_frame_run(raRcFrameState* state, rc_runtime_t* runtime,
         ++state->late_start_frames;
     ra_rc_do_frame(state, runtime, handler, peek, peek_userdata,
                    clock, clock_userdata, &previous);
+    ++state->diagnostics.frames_evaluated;
 
     if (state->cost > state->cost_max)
         state->cost_max = state->cost;
