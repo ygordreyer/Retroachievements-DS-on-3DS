@@ -1,40 +1,14 @@
-/*
-    Step 3c's half that needs no network: the RetroAchievements configuration file.
-
-    Deliberately shaped like the one odelot ships for his MiSTer core -- `key=value`, `#` for
-    comments, credentials at the top -- because that is the file this project's user already
-    knows, and a format someone can copy from a working example is worth more than a tidier one
-    they have to learn.
-
-    ## The password lives in the file
-
-    That is a decision on the record rather than an oversight: it is how odelot's works, and it
-    was chosen knowingly after the alternative -- log in once, keep only the token, never write
-    the password to the card -- was offered and declined. `r=login` therefore sends it in the
-    clear on every boot, and the file sits readable on the SD.
-
-    What this code does *not* do is put it anywhere else. It never goes in the log, which is a
-    file that gets shared: see raConfigRedact(). Nothing else about the choice is this file's
-    business.
-
-    ## Everything unknown is tolerated, and everything recognised-but-unused says so
-
-    odelot's file carries a dozen keys about popups, leaderboards and hardcore behaviour. Most
-    of them describe an overlay this fork does not have yet. Rejecting them would make his file
-    unusable here for no reason; accepting them silently would make a typo indistinguishable
-    from a feature that is simply not built. So the ones we know about are counted as
-    recognised-but-not-yet, and only genuinely unknown keys are reported.
-
-    This file is part of nds-bootstrap and is licensed under the GPL-3.0,
-    the same terms as the rest of the project.
-*/
+/* Credentials never leave this module through diagnostics. */
 
 #include "ra.h"
 #include "ra_wifi.h"
+#include "ra_queue_io.h"
+#include "ra_login.h"
 
 #if RA_LAUNCHER_WIFI
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /*
@@ -42,6 +16,7 @@
 */
 #define RA_CFG_USERNAME  "username"
 #define RA_CFG_PASSWORD  "password"
+#define RA_CFG_TOKEN     "token"
 #define RA_CFG_HARDCORE  "hardcore"
 #define RA_CFG_DEBUG     "debug"
 /*
@@ -241,8 +216,74 @@ static bool raCfgKnownUnused(const char* key) {
 	return false;
 }
 
+static void raCfgParseLine(raConfig* cfg, char* line) {
+	char* key;
+	char* value;
+	char* eq;
+
+	key = raCfgTrim(line);
+	if (key[0] == 0 || key[0] == '#') {
+		return;
+	}
+
+	eq = strchr(key, '=');
+	if (!eq) {
+		cfg->badLines++;
+		return;
+	}
+	*eq   = 0;
+	value = raCfgTrim(eq + 1);
+	key   = raCfgTrim(key);
+
+	if (strcmp(key, RA_CFG_USERNAME) == 0) {
+		raCfgCopy(cfg->username, sizeof(cfg->username), value);
+	} else if (strcmp(key, RA_CFG_PASSWORD) == 0) {
+		raCfgCopy(cfg->password, sizeof(cfg->password), value);
+	} else if (strcmp(key, RA_CFG_TOKEN) == 0) {
+		raCfgCopy(cfg->token, sizeof(cfg->token), value);
+	} else if (strcmp(key, RA_CFG_HARDCORE) == 0) {
+		cfg->hardcore = raCfgFlag(value);
+	} else if (strcmp(key, RA_CFG_DEBUG) == 0) {
+		cfg->debug = raCfgFlag(value);
+	} else if (strcmp(key, RA_CFG_SUBMIT) == 0) {
+		cfg->submit = raCfgFlag(value);
+	} else if (strcmp(key, RA_CFG_SYNC) == 0) {
+		cfg->sync = raCfgFlag(value);
+	} else if (strcmp(key, RA_CFG_VERBOSE) == 0) {
+		cfg->verboseLog = raCfgFlag(value);
+	} else if (strcmp(key, RA_CFG_OVERLAY) == 0) {
+		cfg->overlay = raCfgLevel(value, RA_OVERLAY_MAX, RA_OVERLAY_LISTED);
+	} else if (strcmp(key, RA_CFG_OVERLAY_GAMES) == 0) {
+		raCfgCopy(cfg->overlayGames, sizeof(cfg->overlayGames), value);
+	} else if (strcmp(key, RA_CFG_QUEUE) == 0) {
+		cfg->queue = raCfgLevel(value, RA_QUEUE_LEVEL_MAX, RA_QUEUE_LEVEL_FULL);
+	} else if (raCfgKnownUnused(key)) {
+		cfg->notYet++;
+	} else {
+		cfg->unknown++;
+	}
+}
+
+/* Match fgets(line, 192): long physical lines are parsed in 191-byte pieces. */
+static void raCfgParseBuffer(raConfig* cfg, const char* data, size_t size) {
+    char line[192];
+    size_t pos = 0;
+    memset(cfg, 0, sizeof(*cfg));
+    while (pos < size) {
+        size_t used = 0;
+        while (pos < size && used < sizeof(line) - 1) {
+            char c = data[pos++];
+            line[used++] = c;
+            if (c == '\n') break;
+        }
+        line[used] = 0;
+        raCfgParseLine(cfg, line);
+        raSecureClear(line, sizeof(line));
+    }
+}
+
 bool raConfigRead(const char* path, raConfig* cfg) {
-	char  line[192];
+	char  line[192], readBuffer[512];
 	FILE* file;
 
 	memset(cfg, 0, sizeof(*cfg));
@@ -261,60 +302,31 @@ bool raConfigRead(const char* path, raConfig* cfg) {
 	    verbose one is a diagnostic mode you ask for.
 	*/
 
+	if (!raConfigRecover(path)) return false;
 	file = fopen(path, "r");
 	if (!file) {
 		return false;
 	}
+	if (setvbuf(file, readBuffer, _IOFBF, sizeof(readBuffer))) {
+		fclose(file);
+		return false;
+	}
 	cfg->found = 1;
 
-	while (fgets(line, sizeof(line), file)) {
-		char* key;
-		char* value;
-		char* eq;
-
-		key = raCfgTrim(line);
-		if (key[0] == 0 || key[0] == '#') {
-			continue;
-		}
-
-		eq = strchr(key, '=');
-		if (!eq) {
-			cfg->badLines++;
-			continue;
-		}
-		*eq   = 0;
-		value = raCfgTrim(eq + 1);
-		key   = raCfgTrim(key);
-
-		if (strcmp(key, RA_CFG_USERNAME) == 0) {
-			raCfgCopy(cfg->username, sizeof(cfg->username), value);
-		} else if (strcmp(key, RA_CFG_PASSWORD) == 0) {
-			raCfgCopy(cfg->password, sizeof(cfg->password), value);
-		} else if (strcmp(key, RA_CFG_HARDCORE) == 0) {
-			cfg->hardcore = raCfgFlag(value);
-		} else if (strcmp(key, RA_CFG_DEBUG) == 0) {
-			cfg->debug = raCfgFlag(value);
-		} else if (strcmp(key, RA_CFG_SUBMIT) == 0) {
-			cfg->submit = raCfgFlag(value);
-		} else if (strcmp(key, RA_CFG_SYNC) == 0) {
-			cfg->sync = raCfgFlag(value);
-		} else if (strcmp(key, RA_CFG_VERBOSE) == 0) {
-			cfg->verboseLog = raCfgFlag(value);
-		} else if (strcmp(key, RA_CFG_OVERLAY) == 0) {
-			cfg->overlay = raCfgLevel(value, RA_OVERLAY_MAX, RA_OVERLAY_LISTED);
-		} else if (strcmp(key, RA_CFG_OVERLAY_GAMES) == 0) {
-			raCfgCopy(cfg->overlayGames, sizeof(cfg->overlayGames), value);
-		} else if (strcmp(key, RA_CFG_QUEUE) == 0) {
-			cfg->queue = raCfgLevel(value, RA_QUEUE_LEVEL_MAX, RA_QUEUE_LEVEL_FULL);
-		} else if (raCfgKnownUnused(key)) {
-			cfg->notYet++;
-		} else {
-			cfg->unknown++;
-		}
+	while ((raSecureClear(line, sizeof(line)), fgets(line, sizeof(line), file))) {
+		raCfgParseLine(cfg, line);
+	}
+	raSecureClear(line, sizeof(line));
+	if (ferror(file)) {
+		fclose(file);
+		raSecureClear(readBuffer, sizeof(readBuffer));
+		raSecureClear(cfg, sizeof(*cfg));
+		return false;
 	}
 	fclose(file);
+	raSecureClear(readBuffer, sizeof(readBuffer));
 
-	cfg->usable = (cfg->username[0] != 0 && cfg->password[0] != 0);
+	cfg->usable = (cfg->username[0] != 0 && (cfg->token[0] != 0 || cfg->password[0] != 0));
 	return true;
 }
 
@@ -334,6 +346,68 @@ const char* raConfigRedact(const char* secret) {
 	}
 	sniprintf(shown, sizeof(shown), "(set, %u chars)", (unsigned)strlen(secret));
 	return shown;
+}
+
+/* Only credential values change. All other bytes, including line endings, survive. */
+int raConfigStoreToken(const char* path, const char* token, const raQueueFileOps* ops) {
+    char* input = malloc(RA_CFG_FILE_MAX);
+    char* output = malloc(RA_CFG_FILE_MAX);
+    size_t used = 0, pos = 0, tokenSize = strlen(token);
+    int size, haveToken = 0, ok = 0;
+    if (!input || !output || !tokenSize || tokenSize >= sizeof(((raConfig*)0)->token)
+     || strpbrk(token, "\r\n")) goto done;
+    if (!raFileRecover(path, input, RA_CFG_FILE_MAX, ops)) goto done;
+    size = ops->read(ops->context, path, 0, 0, input, RA_CFG_FILE_MAX);
+    if (size < 0 || size > (int)RA_CFG_FILE_MAX) goto done;
+    while (pos < (size_t)size) {
+        size_t start = pos, end, key, eq, tail;
+        int isToken, isPassword;
+        while (pos < (size_t)size && input[pos] != '\n') ++pos;
+        if (pos < (size_t)size) ++pos;
+        end = tail = pos;
+        if (tail > start && input[tail - 1] == '\n') --tail;
+        if (tail > start && input[tail - 1] == '\r') --tail;
+        key = start;
+        while (key < tail && (input[key] == ' ' || input[key] == '\t')) ++key;
+        eq = key;
+        while (eq < tail && input[eq] != '=') ++eq;
+        size_t keyEnd = eq;
+        while (keyEnd > key && (input[keyEnd - 1] == ' ' || input[keyEnd - 1] == '\t')) --keyEnd;
+        isToken = eq < tail && keyEnd - key == 5 && !memcmp(input + key, "token", 5);
+        isPassword = eq < tail && keyEnd - key == 8 && !memcmp(input + key, "password", 8);
+        if (isToken || isPassword) {
+            size_t head = eq + 1 - start;
+            size_t value = isToken ? tokenSize : 0;
+            if (used + head + value + end - tail > RA_CFG_FILE_MAX) goto done;
+            memcpy(output + used, input + start, head); used += head;
+            if (value) { memcpy(output + used, token, value); used += value; }
+            memcpy(output + used, input + tail, end - tail); used += end - tail;
+            if (isToken) haveToken = 1;
+        } else {
+            if (used + end - start > RA_CFG_FILE_MAX) goto done;
+            memcpy(output + used, input + start, end - start); used += end - start;
+        }
+    }
+    if (!haveToken) {
+        size_t newline = used && output[used - 1] != '\n';
+        if (used + newline + 6 + tokenSize + 1 > RA_CFG_FILE_MAX) goto done;
+        if (newline) output[used++] = '\n';
+        memcpy(output + used, "token=", 6); used += 6;
+        memcpy(output + used, token, tokenSize); used += tokenSize;
+        output[used++] = '\n';
+    }
+    {
+        raConfig effective;
+        raCfgParseBuffer(&effective, output, used);
+        int matches = !strcmp(effective.token, token) && !effective.password[0];
+        raSecureClear(&effective, sizeof(effective));
+        if (!matches) goto done;
+    }
+    ok = raFileReplace(path, output, used, ops);
+done:
+    if (input) { raSecureClear(input, RA_CFG_FILE_MAX); free(input); }
+    if (output) { raSecureClear(output, RA_CFG_FILE_MAX); free(output); }
+    return ok;
 }
 
 #endif /* RA_LAUNCHER_WIFI */

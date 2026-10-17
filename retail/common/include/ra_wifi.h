@@ -651,14 +651,7 @@ void        raWifiVerdictFlush(raWifiVerdict* v);
 int         raWifiVerdictStage(const raWifiVerdict* v);
 const char* raWifiVerdictArrival(const raWifiVerdict* v);
 
-/*
-    Step 3c's configuration, read from sd:/_nds/nds-bootstrap/ra.cfg -- the same `key=value`
-    shape odelot's MiSTer core uses, because that is the file this project's user already has.
-
-    The password is kept in the file, knowingly: the alternative of caching only a token was
-    offered and declined. It therefore goes over the wire in the clear on every boot. It must
-    never reach the log -- see raConfigRedact().
-*/
+/* Login tokens are preferred. A password is used once, then removed from ra.cfg. */
 #define RA_CFG_PATH      "sd:/_nds/nds-bootstrap/ra.cfg"
 #define RA_CFG_PATH_FAT  "fat:/_nds/nds-bootstrap/ra.cfg"
 
@@ -715,6 +708,7 @@ int raOverlayAllowed(u8 level, const char* list, u32 gameId);
 typedef struct raConfig {
 	char username[33];   /* RA usernames are short; 32 is well past any real one */
 	char password[65];
+	char token[64];
 	u8   hardcore;       /* the API's h= parameter. Softcore is h=0 and is what this fork does */
 	/*
 	    `submit=0` in ra.cfg: read the queue, report it, send nothing and clear nothing. For testing --
@@ -766,7 +760,7 @@ typedef struct raConfig {
 	*/
 	u8   queue;
 	u8   found;          /* the file existed */
-	u8   usable;         /* ...and both credentials are set */
+	u8   usable;         /* username and either credential are set */
 	u16  notYet;         /* keys we recognise from odelot's file and do not act on yet */
 	u16  unknown;        /* keys nobody knows: almost certainly a typo */
 	u16  badLines;       /* non-comment lines with no `=` */
@@ -1245,6 +1239,12 @@ typedef struct raHashInfo {
 	u32 bufferBytes;
 } raHashInfo;
 
+static inline void raSecureClear(void* data, size_t size) {
+    volatile unsigned char* p = (volatile unsigned char*)data;
+    while (size--) *p++ = 0;
+}
+
+
 #if RA_LAUNCHER_WIFI
 /*
     The probe itself, on the ARM9 launcher. Never returns: it stops on a summary. See the
@@ -1275,6 +1275,7 @@ const char* raHashLastError(void);
 /* Step 3c. The config file, and what may be said about a secret out loud. */
 bool        raConfigRead(const char* path, raConfig* cfg);
 const char* raConfigRedact(const char* secret);
+
 
 /* Step 3c. The transport. */
 bool        raNetUrlEncode(const char* in, char* out, size_t outSize);

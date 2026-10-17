@@ -280,11 +280,14 @@ int raNetHttpGet(const char* host, const char* path, char* out, int outSize, raN
 	              "Connection: close\r\n"
 	              "\r\n",
 	              path, host) >= (int)sizeof(request)) {
+		raSecureClear(request, sizeof(request));
 		lwip_close(sock);
 		return RA_NET_REQ_TOO_LONG;
 	}
 
-	if (send(sock, request, strlen(request), 0) < 0) {
+	int sent = send(sock, request, strlen(request), 0);
+	raSecureClear(request, sizeof(request));
+	if (sent < 0) {
 		lwip_close(sock);
 		return RA_NET_NO_SEND;
 	}
@@ -630,10 +633,13 @@ int raNetHttpGetStream(const char* host, const char* path, raNetSink sink, void*
 	              "Connection: close\r\n"
 	              "\r\n",
 	              path, host) >= (int)sizeof(request)) {
+		raSecureClear(request, sizeof(request));
 		lwip_close(sock);
 		return RA_NET_REQ_TOO_LONG;
 	}
-	if (send(sock, request, strlen(request), 0) < 0) {
+	int sent = send(sock, request, strlen(request), 0);
+	raSecureClear(request, sizeof(request));
+	if (sent < 0) {
 		lwip_close(sock);
 		return RA_NET_NO_SEND;
 	}
@@ -674,10 +680,11 @@ int raNetHttpGetStream(const char* host, const char* path, raNetSink sink, void*
 	    A status the caller can act on, without a second out-parameter: the sink already has the
 	    definitions, and anything other than 200 means it has none for a reason worth naming.
 	*/
-	if (stream.status && stream.status != 200) {
-		return -(int)(1000 + stream.status);
-	}
-	return (int)stream.bodyBytes;
+	int result = stream.status && stream.status != 200
+	           ? -(int)(1000 + stream.status) : (int)stream.bodyBytes;
+	raSecureClear(rx, sizeof(rx));
+	raSecureClear(&stream, sizeof(stream));
+	return result;
 }
 #endif /* RA_NET_HOST_TEST */
 
@@ -720,13 +727,17 @@ bool raNetJsonString(const char* json, const char* key, char* out, size_t outSiz
 
 	while (at[i] && at[i] != '"') {
 		if (i + 1 >= outSize) {
-			out[i] = 0;
+			raSecureClear(out, outSize);
 			return false;
 		}
 		out[i] = at[i];
 		i++;
 	}
 	out[i] = 0;
+	if (at[i] != '"') {
+		raSecureClear(out, outSize);
+		return false;
+	}
 	return i > 0;
 }
 

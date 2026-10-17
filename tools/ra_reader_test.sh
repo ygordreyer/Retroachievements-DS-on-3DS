@@ -109,7 +109,7 @@ $CC -std=gnu99 -Wall -O1 \
 	-Dsniprintf=snprintf \
 	-Itools/host-stubs -Iretail/common/include -Iretail/cardenginei/arm9_ra/include -I"$RC/include" -I"$RC/src" \
 	tools/ra_launcher_test.c \
-	retail/arm9/source/ra_hash.c retail/arm9/source/ra_cfg.c \
+	retail/arm9/source/ra_hash.c retail/arm9/source/ra_cfg.c retail/arm9/source/ra_login.c retail/arm9/source/ra_queue_io.c \
 	retail/arm9/source/ra_screen.c \
 	retail/arm9/source/ra_patch.c retail/arm9/source/ra_queue.c \
 	"$RC"/src/rhash/md5.c "$RC"/src/rhash/hash.c "$RC"/src/rhash/hash_rom.c \

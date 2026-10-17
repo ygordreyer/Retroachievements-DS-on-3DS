@@ -817,10 +817,14 @@ static void recoverUnlockQueue(const char* path, const char* logPath) {
 
 int loadFromSD(configuration* conf, const char *bootstrapPath) {
 	int rc = 0;
-	if (fatMountSimple("sd", &__my_io_dsisd))
+	if (fatMountSimple("sd", &__my_io_dsisd)) {
 		recoverUnlockQueue(RA_QUEUE_PATH, "sd:/ra_queue_recovery.log");
-	if (fatMountSimple("fat", dldiGetInternal()))
+		if (!raConfigRecover(RA_CFG_PATH)) nocashMessage("RA config recovery failed; login disabled");
+	}
+	if (fatMountSimple("fat", dldiGetInternal())) {
 		recoverUnlockQueue(RA_QUEUE_PATH_FAT, "fat:/ra_queue_recovery.log");
+		if (!raConfigRecover(RA_CFG_PATH_FAT)) nocashMessage("RA config recovery failed; login disabled");
+	}
 
 	conf->sdFound = (access("sd:/", F_OK) == 0);
 	const bool flashcardFound = (access("fat:/", F_OK) == 0);

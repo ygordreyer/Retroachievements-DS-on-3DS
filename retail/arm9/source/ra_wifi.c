@@ -33,6 +33,7 @@
 */
 
 #include "ra_wifi.h"
+#include "ra_login.h"
 #include "ra_queue_io.h"
 #include "ra_unlock.h"
 #include <errno.h>
@@ -157,6 +158,20 @@ static char          raToken[64];
     r=awardachievement wants must be computed over the same spelling that goes in u=.
 */
 static char          raUser[sizeof(((raConfig*)0)->username)];
+static const raConfig* logConfig;
+static int loginResult;
+static char raIdentifyResponse[1024];
+static char raSessionResponse[2048];
+static char raAwardResponse[1024];
+static char raUnlocksResponse[4096];
+static raPatch patch;
+
+static char* raWifiFormat(const char* fmt, va_list args) {
+    const char* secrets[3] = {raToken, logConfig ? logConfig->password : "",
+                             logConfig ? logConfig->token : ""};
+    return raSecretFormat(fmt, args, secrets, 3);
+}
+
 /*
     Which card the launcher booted from, kept at file scope for one reason: the failure paths in the
     fetch have to reach the per-game cache, and they are called from places that were never given the
@@ -430,17 +445,21 @@ static void raWifiSpin(void) {
     summary below says all of this and more.
 */
 static void raWifiEssentialPal(const char* colour, const char* fmt, ...) {
-	char    line[RA_LINE_MAX];
+	char*   line;
 	va_list args;
 
 	if (raVerbose) {
 		return;
 	}
 	va_start(args, fmt);
-	vsniprintf(line, sizeof(line), fmt, args);
+	line = raWifiFormat(fmt, args);
 	va_end(args);
-
+	if (!line) return;
+	size_t length = strlen(line);
+	if (length >= RA_LINE_MAX) raSecureClear(line + RA_LINE_MAX - 1, length - RA_LINE_MAX + 2);
 	iprintf("%s%s\x1b[37m\n", colour, line);
+	raSecureClear(line, strlen(line));
+	free(line);
 }
 
 #define raWifiEssential(...)  raWifiEssentialPal("", __VA_ARGS__)
@@ -502,14 +521,15 @@ static void raWifiDrain(void) {
     with the summary interleaved into whatever dsiwifi was mid-sentence about.
 */
 static void raWifiLog(const char* fmt, ...) {
-	char    line[192];
+	char*   line;
 	va_list args;
 
 	raWifiDrain();
 
 	va_start(args, fmt);
-	vsniprintf(line, sizeof(line), fmt, args);
+	line = raWifiFormat(fmt, args);
 	va_end(args);
+	if (!line) return;
 
 	if (raVerbose) {
 		iprintf("%s", line);
@@ -518,52 +538,34 @@ static void raWifiLog(const char* fmt, ...) {
 		fputs(line, logFile);
 	}
 	raWifiSync();
+	raSecureClear(line, strlen(line));
+	free(line);
 }
 
-/*
-    A whole reply body in the log, in pieces that fit, with the token removed on the way.
-
-    Two reasons this is not just raWifiLog("%s", body). The line buffer above is 192 bytes, so a
-    900-byte reply logged that way is silently cut at the first 192 -- which is how three runs went by
-    with `r=unlocks` reporting a parsed count and never showing what it was parsing. And this log is
-    written to be sent to someone else, so a body must never carry the session token out with it.
-
-    The redaction is a safety net rather than a fix for a known leak: no reply this client reads is
-    supposed to echo the token back. A net is worth having anyway, because the cost of being wrong
-    once is an account, and because the next endpoint added here does not have to remember the rule.
-    See raConfigRedact() for the same rule applied to the password.
-
-    The `>= 8` guard is load-bearing: strncmp against a zero-length token matches at every position,
-    which would spin here forever.
-*/
+/* Match before chunking, so a secret crossing a log boundary cannot escape. */
 static void raWifiLogBody(const char* label, const char* body) {
-	const size_t tokenLength = strlen(raToken);
-	size_t       i = 0;
-	char         chunk[144];
-
-	raWifiLog("%s:\n", label);
-
-	while (body[i]) {
-		size_t n = 0;
-
-		while (body[i] && n < sizeof(chunk) - 1) {
-			if (tokenLength >= 8 && strncmp(body + i, raToken, tokenLength) == 0) {
-				if (n + 7 >= sizeof(chunk) - 1) {
-					break;   /* no room; flush and let the next chunk carry it */
-				}
-				memcpy(chunk + n, "(token)", 7);
-				n += 7;
-				i += tokenLength;
-				continue;
-			}
-			chunk[n++] = body[i++];
-		}
-		if (n == 0) {
-			break;           /* cannot happen with a 144-byte chunk; not worth risking a spin */
-		}
-		chunk[n] = 0;
-		raWifiLog("  %s\n", chunk);
-	}
+    const char* secrets[3] = {raToken, logConfig ? logConfig->token : "",
+                             logConfig ? logConfig->password : ""};
+    char chunk[144];
+    size_t i = 0;
+    raWifiLog("%s:\n", label);
+    while (body[i]) {
+        size_t n = 0;
+        while (body[i] && n < sizeof(chunk) - 1) {
+            size_t match = 0;
+            for (unsigned k = 0; k < 3; ++k) {
+                size_t length = strlen(secrets[k]);
+                if (length > match && !strncmp(body + i, secrets[k], length)) match = length;
+            }
+            if (match) {
+                chunk[n++] = '*';
+                i += match;
+            } else chunk[n++] = body[i++];
+        }
+        chunk[n] = 0;
+        raWifiLog("  %s\n", chunk);
+    }
+    raSecureClear(chunk, sizeof(chunk));
 }
 
 /*
@@ -777,120 +779,34 @@ static void raWifiReportAttempts(const char* what, const raNetProgress* p) {
     hardware a long time ago (see #1a), and a test that has passed every run since is a cost, not a check.
 */
 
-/*
-    Stage 10: r=login, with the credentials from ra.cfg.
+static int raWifiLoginRequest(void* context, const char* path, char* response, int capacity) {
+    raNetProgress p;
+    int got;
+    (void)context;
+    memset(&p, 0, sizeof(p));
+    got = raNetHttpGet(RA_NET_HOST, path, response, capacity, &p);
+    verdict.dnsOk = p.resolved;
+    verdict.tcpOk = p.connected;
+    if (p.resolved) {
+        raWifiLog("resolved         %s\n", RA_NET_HOST);
+        raWifiReportIp("its address", p.address);
+    }
+    if (p.connected) raWifiLog("connected        port %d\n", RA_NET_PORT);
+    raWifiReportAttempts("login", &p);
+    if (got >= 0 && strstr(response, "\"Success\"")) verdict.apiOk = 1;
+    if (got >= 0 && !raLoginReplyDecode(response, got, p.closedByPeer)) return RA_NET_BAD_ARGS;
+    return got;
+}
 
-    The password is percent-encoded rather than pasted in, and that is the one detail in this
-    function that can fail convincingly: an `&` in a password ends the parameter early, a `+`
-    decodes as a space, a `%` opens an escape that is not there. Each produces a well-formed
-    request that comes back `invalid_credentials` -- so the user would be told their password
-    is wrong when it is not. tools/ra_launcher_test.c pins the encoder against exactly those.
+static void raWifiLoginLog(void* context, const char* message) {
+    (void)context;
+    raWifiLog("%s\n", message);
+}
 
-    Nothing secret is logged. Not the password, and not the token either: a token grants the
-    same power over the account, and this log is a file whose purpose is to be sent to someone.
-    A length answers the only question a log needs to answer.
-*/
-static void raWifiLogin(const raConfig* cfg) {
-	static char   response[2048];
-	char          user[3 * sizeof(cfg->username)];
-	char          pass[3 * sizeof(cfg->password)];
-	char          path[320];
-	raNetProgress p;
-	int           got;
-
-	if (!cfg->usable) {
-		raWifiLog(cfg->found
-		          ? "\x1b[33mra.cfg has no username/password; login skipped\x1b[37m\n"
-		          : "\x1b[33mno ra.cfg; login skipped\x1b[37m\n");
-		return;
-	}
-
-	if (!raNetUrlEncode(cfg->username, user, sizeof(user))
-	 || !raNetUrlEncode(cfg->password, pass, sizeof(pass))) {
-		raWifiLog("\x1b[31mcredentials too long to encode\x1b[37m\n");
-		return;
-	}
-	if (sniprintf(path, sizeof(path), "/dorequest.php?r=login&u=%s&p=%s", user, pass)
-	    >= (int)sizeof(path)) {
-		raWifiLog("\x1b[31mlogin request too long\x1b[37m\n");
-		return;
-	}
-
-	raWifiLog("logging in as    %s\n", cfg->username);
-
-	memset(&p, 0, sizeof(p));
-	got = raNetHttpGet(RA_NET_HOST, path, response, sizeof(response), &p);
-
-	/*
-	    Rungs 7 to 9, from this request rather than from a throwaway one before it. DNS, TCP and "the API
-	    answered" are all side effects of any successful call, and this is the first call there is.
-	*/
-	verdict.dnsOk = p.resolved;
-	verdict.tcpOk = p.connected;
-	if (p.resolved) {
-		raWifiLog("resolved         %s\n", RA_NET_HOST);
-		raWifiReportIp("its address", p.address);
-	}
-	if (p.connected) {
-		raWifiLog("connected        port %d\n", RA_NET_PORT);
-	}
-	raWifiReportAttempts("login", &p);
-	if (got < 0) {
-		raWifiLog("\x1b[31mlogin HTTP failed at step %d\x1b[37m\n", -got);
-		return;
-	}
-	raWifiLog("%d bytes back\n", got);
-	/*
-	    Recognisably the API: a JSON object with the fields it uses. Enough for rung 9, whether or not
-	    the credentials in it were right.
-	*/
-	if (strstr(response, "\"Success\"")) {
-		verdict.apiOk = 1;
-	}
-
-	if (raNetJsonString(response, "Token", raToken, sizeof(raToken))) {
-		verdict.loggedIn = 1;
-		raWifiLog("\x1b[32mlogged in, token %s\x1b[37m\n", raConfigRedact(raToken));
-		/*
-		    The account's own spelling of its name, which is not always what ra.cfg says -- RA
-		    matches the login case-insensitively and answers with the canonical form. It matters
-		    here and nowhere else: r=awardachievement's signature is an md5 over the username, so
-		    the launcher has to hash whatever it also sends in u=. Using the canonical one for both
-		    is what rcheevos does. If the reply has no User field, cfg's spelling stands, which is
-		    the behaviour we had before asking.
-		*/
-		/*
-		    Only on a clean read. raNetJsonString() leaves a *partial* copy behind when the value
-		    does not fit and returns false, so testing the buffer instead of the return value would
-		    adopt a truncated username -- and a truncated username signs every award wrong while
-		    looking entirely reasonable in the log. Same buffer size as ra.cfg's field, so the
-		    encoded form always fits the caller's buffer too.
-		*/
-		if (raNetJsonString(response, "User", raUser, sizeof(raUser))) {
-			if (strcmp(raUser, cfg->username) != 0) {
-				raWifiLog("the account is   %s\n", raUser);
-			}
-		} else {
-			sniprintf(raUser, sizeof(raUser), "%s", cfg->username);
-		}
-		return;
-	}
-
-	/*
-	    The API's own error, verbatim -- it distinguishes a wrong password from a banned
-	    account from a malformed request, and guessing between those from a console is exactly
-	    what this project does not do.
-	*/
-	{
-		char code[64];
-
-		if (raNetJsonString(response, "Code", code, sizeof(code))) {
-			raWifiLog("\x1b[31mlogin refused: %s\x1b[37m\n", code);
-		} else {
-			raWifiLog("\x1b[31mno token in the reply\x1b[37m\n");
-		}
-		raWifiLog("body: %s\n", raNetBody(response));
-	}
+static void raWifiLogin(raConfig* cfg) {
+    const raLoginOps ops = {0, raWifiLoginRequest, raWifiLoginLog, &raQueueStdFileOps};
+    loginResult = raLogin(cfg, raWifiSdFound ? RA_CFG_PATH : RA_CFG_PATH_FAT, raUser, raToken, &ops);
+    verdict.loggedIn = loginResult == RA_LOGIN_OK;
 }
 
 /*
@@ -910,7 +826,6 @@ static void raWifiLogin(const raConfig* cfg) {
     not know, and saying so plainly is the whole value of this rung.
 */
 static void raWifiIdentify(void) {
-	static char   response[1024];
 	char          path[128];
 	raNetProgress p;
 	int           got;
@@ -922,6 +837,7 @@ static void raWifiIdentify(void) {
 	}
 	if (sniprintf(path, sizeof(path), "/dorequest.php?r=gameid&m=%s", romHash)
 	    >= (int)sizeof(path)) {
+		raSecureClear(path, sizeof(path));
 		raWifiLog("\x1b[31mgameid request too long\x1b[37m\n");
 		return;
 	}
@@ -929,7 +845,8 @@ static void raWifiIdentify(void) {
 	raWifiLog("asking about     %s\n", romHash);
 
 	memset(&p, 0, sizeof(p));
-	got = raNetHttpGet(RA_NET_HOST, path, response, sizeof(response), &p);
+	got = raNetHttpGet(RA_NET_HOST, path, raIdentifyResponse, sizeof(raIdentifyResponse), &p);
+	raSecureClear(path, sizeof(path));
 	raWifiReportAttempts("gameid", &p);
 	if (got < 0) {
 		raWifiLog("\x1b[31mgameid HTTP failed at step %d\x1b[37m\n", -got);
@@ -937,9 +854,9 @@ static void raWifiIdentify(void) {
 	}
 	raWifiLog("%d bytes back\n", got);
 
-	if (!raNetJsonNumber(response, "GameID", &gameId)) {
+	if (!raNetJsonNumber(raIdentifyResponse, "GameID", &gameId)) {
 		raWifiLog("\x1b[31mno GameID in the reply\x1b[37m\n");
-		raWifiLog("body: %s\n", raNetBody(response));
+		raWifiLogBody("reply body", raNetBody(raIdentifyResponse));
 		return;
 	}
 
@@ -953,7 +870,7 @@ static void raWifiIdentify(void) {
 		*/
 		raWifiLog("\x1b[33mthe server does not know this hash\x1b[37m\n"
 		          "the dump is not one the set covers.\n");
-		raWifiLog("body: %s\n", raNetBody(response));
+		raWifiLogBody("reply body", raNetBody(raIdentifyResponse));
 		/*
 		    And throw away anything already staged for it, because this reply is the one thing that
 		    can say no set applies -- and until now it was the only answer that left the *wrong* set
@@ -1016,7 +933,6 @@ static void raWifiIdentify(void) {
     that might work is better than one that certainly does not.
 */
 static void raWifiStartSession(const raConfig* cfg) {
-	static char   response[2048];
 	static u32    unlocks[RA_WIFI_UNLOCKS_MAX];
 	char          user[3 * sizeof(raUser)];
 	char          path[384];
@@ -1033,21 +949,23 @@ static void raWifiStartSession(const raConfig* cfg) {
 	              "/dorequest.php?r=startsession&u=%s&t=%s&g=%lu&h=%d&m=%s&l=%s",
 	              user, raToken, (unsigned long)verdict.gameId, cfg->hardcore ? 1 : 0,
 	              romHash, RA_NET_CLIENT_VERSION) >= (int)sizeof(path)) {
+		raSecureClear(path, sizeof(path));
 		raWifiLog("\x1b[31msession request too long\x1b[37m\n");
 		return;
 	}
 
 	memset(&p, 0, sizeof(p));
-	got = raNetHttpGet(RA_NET_HOST, path, response, sizeof(response), &p);
+	got = raNetHttpGet(RA_NET_HOST, path, raSessionResponse, sizeof(raSessionResponse), &p);
+	raSecureClear(path, sizeof(path));
 	raWifiReportAttempts("session", &p);
 	if (got < 0) {
 		raWifiLog("\x1b[33msession HTTP failed at step %d; awarding anyway\x1b[37m\n", -got);
 		return;
 	}
 	raWifiLog("%d bytes back\n", got);
-	raWifiLogBody("session reply", raNetBody(response));
+	raWifiLogBody("session reply", raNetBody(raSessionResponse));
 
-	if (!raNetJsonTrue(response, "Success")) {
+	if (!raNetJsonTrue(raSessionResponse, "Success")) {
 		raWifiLog("\x1b[33mthe server did not start a session\x1b[37m\n");
 		return;
 	}
@@ -1065,7 +983,7 @@ static void raWifiStartSession(const raConfig* cfg) {
 	    The skip list therefore stays with r=unlocks, whose h=0 form is the softcore list. Asking twice
 	    also keeps the two able to disagree in the log rather than one quietly overwriting the other.
 	*/
-	soft = raNetJsonObjectField(response, "Unlocks", "ID", unlocks, RA_WIFI_UNLOCKS_MAX);
+	soft = raNetJsonObjectField(raSessionResponse, "Unlocks", "ID", unlocks, RA_WIFI_UNLOCKS_MAX);
 	/*
 	    ...and *when*, from the same objects, which is the only place in this whole API that says so.
 	    `r=unlocks` answers in bare ids and `r=patch` describes the set rather than the account, so a
@@ -1077,7 +995,7 @@ static void raWifiStartSession(const raConfig* cfg) {
 	    that is checked below rather than trusted.
 	*/
 	{
-		const int whens = raNetJsonObjectField(response, "Unlocks", "When",
+		const int whens = raNetJsonObjectField(raSessionResponse, "Unlocks", "When",
 		                                       earnedWhen, RA_WIFI_UNLOCKS_MAX);
 
 		if (soft > 0 && whens == soft) {
@@ -1112,12 +1030,12 @@ static void raWifiStartSession(const raConfig* cfg) {
 	{
 		u32 serverNow = 0;
 
-		if (raNetJsonNumber(response, "ServerNow", &serverNow) && serverNow) {
+		if (raNetJsonNumber(raSessionResponse, "ServerNow", &serverNow) && serverNow) {
 			clockOffset = (s32)((u32)time(NULL) - serverNow);
 			raWifiLog("clock offset     %ld s from the server\n", (long)clockOffset);
 		}
 	}
-	hard = raNetJsonObjectField(response, "HardcoreUnlocks", "ID", unlocks, RA_WIFI_UNLOCKS_MAX);
+	hard = raNetJsonObjectField(raSessionResponse, "HardcoreUnlocks", "ID", unlocks, RA_WIFI_UNLOCKS_MAX);
 	verdict.sessionUnlocks = (u16)(soft > 0 ? soft : 0);
 	verdict.sessionHardcore = (u16)(hard > 0 ? hard : 0);
 	/*
@@ -1165,7 +1083,6 @@ static void raWifiStartSession(const raConfig* cfg) {
     clearest statement available that the file no longer has a say here.
 */
 static void raWifiSubmitOne(u32 id, u32 when, int hardcore, raQueue* q, int index) {
-	static char   response[1024];
 	char          user[3 * sizeof(raUser)];
 	char          path[384];
 	char          signature[33];
@@ -1223,6 +1140,7 @@ static void raWifiSubmitOne(u32 id, u32 when, int hardcore, raQueue* q, int inde
 	              "/dorequest.php?r=awardachievement&u=%s&t=%s&a=%lu&h=%d%s&v=%s",
 	              user, raToken, (unsigned long)id, hardcore, offset, signature)
 	    >= (int)sizeof(path)) {
+		raSecureClear(path, sizeof(path));
 		raWifiLog("\x1b[31maward request too long\x1b[37m\n");
 		q->kept++;
 		return;
@@ -1239,9 +1157,10 @@ static void raWifiSubmitOne(u32 id, u32 when, int hardcore, raQueue* q, int inde
 	}
 
 	memset(&p, 0, sizeof(p));
-	got = raNetHttpGet(RA_NET_HOST, path, response, sizeof(response), &p);
+	got = raNetHttpGet(RA_NET_HOST, path, raAwardResponse, sizeof(raAwardResponse), &p);
+	raSecureClear(path, sizeof(path));
 	raWifiReportAttempts("award", &p);
-	if (got < 0 || !raQueueReplyDecode(response, got, p.closedByPeer)) {
+	if (got < 0 || !raQueueReplyDecode(raAwardResponse, got, p.closedByPeer)) {
 		/*
 		    A timeout can follow server acceptance; keep the record for an idempotent retry.
 		*/
@@ -1254,8 +1173,8 @@ static void raWifiSubmitOne(u32 id, u32 when, int hardcore, raQueue* q, int inde
     {
         char error[160] = {0};
         int result;
-        raNetJsonString(response, "Error", error, sizeof(error));
-        result = raQueueAwardResult(1, raNetJsonTrue(response, "Success"), error);
+        raNetJsonString(raAwardResponse, "Error", error, sizeof(error));
+        result = raQueueAwardResult(1, raNetJsonTrue(raAwardResponse, "Success"), error);
         q->sent++;
         if (result == RA_AWARD_ACCEPTED) {
             q->accepted++;
@@ -1269,7 +1188,8 @@ static void raWifiSubmitOne(u32 id, u32 when, int hardcore, raQueue* q, int inde
             raWifiLog("  %lu %s: %s\n", (unsigned long)id,
                       result == RA_AWARD_REFUSED ? "refused, retained" : "pending", error);
         }
-        raWifiLogBody("award reply", raNetBody(response));
+        raWifiLogBody("award reply", raNetBody(raAwardResponse));
+        raSecureClear(error, sizeof(error));
     }
 }
 
@@ -1568,7 +1488,6 @@ static void raWifiStagePending(bool sdFound, const char* ndsPath) {
     see the `Warning: Unknown Emulator` notice.
 */
 static void raWifiUnlocks(const raConfig* cfg) {
-	static char   response[4096];
 	char          user[3 * sizeof(cfg->username)];
 	char          path[384];
 	raNetProgress p;
@@ -1584,12 +1503,14 @@ static void raWifiUnlocks(const raConfig* cfg) {
 	}
 	if (sniprintf(path, sizeof(path), "/dorequest.php?r=unlocks&u=%s&t=%s&g=%lu&h=0",
 	              user, raToken, (unsigned long)verdict.gameId) >= (int)sizeof(path)) {
+		raSecureClear(path, sizeof(path));
 		raWifiLog("\x1b[31munlocks request too long\x1b[37m\n");
 		return;
 	}
 
 	memset(&p, 0, sizeof(p));
-	got = raNetHttpGet(RA_NET_HOST, path, response, sizeof(response), &p);
+	got = raNetHttpGet(RA_NET_HOST, path, raUnlocksResponse, sizeof(raUnlocksResponse), &p);
+	raSecureClear(path, sizeof(path));
 	raWifiReportAttempts("unlocks", &p);
 	if (got < 0) {
 		raWifiLog("\x1b[33munlocks HTTP failed at step %d; staging the whole set\x1b[37m\n", -got);
@@ -1603,16 +1524,16 @@ static void raWifiUnlocks(const raConfig* cfg) {
 	    endpoint still named only the notice -- at which point the parsed number is the one thing that
 	    cannot settle the question. Under 1 KB, and the log has room.
 	*/
-	raWifiLogBody("unlocks reply", raNetBody(response));
+	raWifiLogBody("unlocks reply", raNetBody(raUnlocksResponse));
 
-	count = raNetJsonIdList(response, "UserUnlocks", unlockedIds, RA_WIFI_UNLOCKS_MAX);
+	count = raNetJsonIdList(raUnlocksResponse, "UserUnlocks", unlockedIds, RA_WIFI_UNLOCKS_MAX);
 	if (count < 0) {
 		/*
 		    No UserUnlocks key at all, which is a failure rather than an empty account -- the two
 		    look identical from the skip list and mean different things about whether to trust it.
 		*/
 		raWifiLog("\x1b[33mno UserUnlocks in the reply; staging the whole set\x1b[37m\n");
-		raWifiLog("body: %s\n", raNetBody(response));
+		raWifiLogBody("reply body", raNetBody(raUnlocksResponse));
 		return;
 	}
 
@@ -1748,7 +1669,6 @@ static void raWifiPatchSink(void* ctx, const char* data, int length) {
 }
 
 static void raWifiFetchPatch(const raConfig* cfg) {
-	static raPatch patch;
 	char           user[3 * sizeof(cfg->username)];
 	char           path[384];
 	char* const    block = (char*)(CARDENGINEI_ARM9_RA_DEFS_BUFFERED_LOCATION
@@ -1792,6 +1712,7 @@ static void raWifiFetchPatch(const raConfig* cfg) {
 	*/
 	if (sniprintf(path, sizeof(path), "/dorequest.php?r=patch&u=%s&t=%s&g=%lu",
 	              user, raToken, (unsigned long)verdict.gameId) >= (int)sizeof(path)) {
+		raSecureClear(path, sizeof(path));
 		raWifiLog("\x1b[31mpatch request too long\x1b[37m\n");
 		return;
 	}
@@ -1814,6 +1735,7 @@ static void raWifiFetchPatch(const raConfig* cfg) {
 
 	memset(&p, 0, sizeof(p));
 	got = raNetHttpGetStream(RA_NET_HOST, path, raWifiPatchSink, &patch, &p);
+	raSecureClear(path, sizeof(path));
 	raPatchFinish(&patch);
 	if (raVerbose) {
 		iprintf("\n");
@@ -2415,6 +2337,8 @@ void raWifiProbe(bool sdFound, const char* ndsPath, bool cheatsOn) {
 	    before the radio can be blamed for anything, and stage 0c below still reports every field.
 	*/
 	raConfigRead(sdFound ? RA_CFG_PATH : RA_CFG_PATH_FAT, &config);
+	logConfig = &config;
+	loginResult = RA_LOGIN_FAILED;
 	raVerbose = config.verboseLog;
 
 	if (raVerbose) {
@@ -2497,6 +2421,7 @@ void raWifiProbe(bool sdFound, const char* ndsPath, bool cheatsOn) {
 	if (config.found) {
 		raWifiLog("username         %s\n", config.username[0] ? config.username : "(empty)");
 		raWifiLog("password         %s\n", raConfigRedact(config.password));
+		raWifiLog("token            %s\n", raConfigRedact(config.token));
 		raWifiLog("hardcore         %s\n", config.hardcore ? "1" : "0");
 		/*
 		    Decided here, before stage 10, so every request in the ladder is signed with the mode the
@@ -2518,7 +2443,7 @@ void raWifiProbe(bool sdFound, const char* ndsPath, bool cheatsOn) {
 			raWifiLog("\x1b[33m%u lines with no '='\x1b[37m\n", config.badLines);
 		}
 	} else {
-		raWifiLog("put username= and password= in\n%s\n",
+		raWifiLog("put username= and token= or password= in\n%s\n",
 		          sdFound ? RA_CFG_PATH : RA_CFG_PATH_FAT);
 		raWifiWarn("No ra.cfg: playing offline");
 	}
@@ -2648,6 +2573,15 @@ void raWifiProbe(bool sdFound, const char* ndsPath, bool cheatsOn) {
 	raWifiReportHeap("after patch");
 
 done:
+	raSecureClear(config.password, sizeof(config.password));
+	raSecureClear(config.token, sizeof(config.token));
+	raSecureClear(raToken, sizeof(raToken));
+	raSecureClear(raIdentifyResponse, sizeof(raIdentifyResponse));
+	raSecureClear(raSessionResponse, sizeof(raSessionResponse));
+	raSecureClear(raAwardResponse, sizeof(raAwardResponse));
+	raSecureClear(raUnlocksResponse, sizeof(raUnlocksResponse));
+	raSecureClear(&patch, sizeof(patch));
+	logConfig = 0;
 	/*
 	    The set for this ROM, if the ladder did not produce one.
 
@@ -2801,7 +2735,10 @@ done:
 			if (verdict.loggedIn) {
 				raWifiEssential("Signed in as %s", raUser[0] ? raUser : config.username);
 			} else if (!config.usable) {
-				raWifiWarn("No username or password set");
+				raWifiWarn("Set username and token/password");
+			} else if (loginResult == RA_LOGIN_NEEDS_PASSWORD) {
+				raWifiError("Token rejected. Put password=");
+				raWifiError("back in ra.cfg for one boot.");
 			} else if (verdict.apiOk) {
 				raWifiError("Could not sign in");
 			} else if (verdict.gotIp) {

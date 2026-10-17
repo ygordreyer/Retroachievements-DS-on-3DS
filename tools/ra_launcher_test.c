@@ -307,6 +307,7 @@ static void test_config(void) {
 	CHECK(cfg.overlay == 1);
 	CHECK(cfg.queue == 1);
 
+
 	printf("\nverbose_log is off unless the file asks for it\n");
 	{
 		raConfig vcfg;
@@ -746,6 +747,14 @@ static void test_config(void) {
 		CHECK(raNetJsonNumber("{\"Success\":false}", "GameID", &id) == false);
 		CHECK(raNetJsonNumber("{\"GameID\":99999999999999}", "GameID", &id) == false);
 	}
+
+    f = fopen(path, "w");
+    CHECK(f != 0);
+    fputs("username=testuser\ntoken=faketoken0123\npassword=\n", f);
+    fclose(f);
+    CHECK(raConfigRead(path, &cfg));
+    CHECK(cfg.usable && cfg.token[0] && !cfg.password[0]);
+    CHECK(cfg.unknown == 0);
 
 	remove(path);
 }
