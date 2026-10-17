@@ -13,9 +13,16 @@
 #include "ra_wifi.h"   /* raPendingBlock -- the tally the launcher staged */
 #include "ra_diagnostics.h"
 #include "ra_unlock.h"
+#ifndef B4DS
+#include "ra_unlock_export.h"
+#endif
 #include "cardengine_header_arm9.h"
 #include "nds_header.h"
 #include "tonccpy.h"
+
+#ifndef B4DS
+static uint16_t raExportClock(void) { return REG_VCOUNT; }
+#endif
 
 void DC_InvalidateRange(const void *base, u32 size);
 void DC_FlushRange(const void *base, u32 size);
@@ -694,7 +701,8 @@ static void raPendingPage(void) {
             raPrintNum(20, 19, 3, commits, FONT_LIME);
             const char* result = status == RA_UNLOCK_FULL ? "SD queue FULL"
                 : status == RA_UNLOCK_NO_FILE ? "SD file missing"
-                : status == RA_UNLOCK_WRITE_FAILED ? "SD write failed" : "SD append OK";
+                : status == RA_UNLOCK_WRITE_FAILED ? "SD write failed"
+                : status == RA_UNLOCK_READ_BUSY ? "SD read busy" : "SD append OK";
             print(0, 20, (unsigned char*)result, status ? FONT_RED : FONT_WHITE, false);
             print(19, 20, (unsigned char*)"Refused", FONT_WHITE, false);
             raPrintNum(27, 20, 3, d->refused, FONT_RED);
@@ -1603,6 +1611,18 @@ u32 inGameMenu(s32 *mainScreen, u32 consoleModel, s32 *exceptionRegisters) {
 		val >>= 4;
 		BG_GFX_SUB[i * 2 + 1] = (val & 1) | ((val & 2) << 3) | ((val & 4) << 6) | ((val & 8) << 9);
 	}
+
+#ifndef B4DS
+	/* Export ARM9-only WRAM before ARM7 can tear down a paused game. */
+	if (!exception && consoleModel > 0
+	 && (((const raSessionBlock*)CARDENGINEI_ARM9_RA_SESSION_LOCATION)->magic == RA_SESSION_MAGIC
+	     || ((const raUnlockDiagnostics*)CARDENGINEI_ARM9_RA_UNLOCK_LOCATION)->magic == RA_UNLOCK_DIAGNOSTICS_MAGIC)
+	 && *(const vu32*)CARDENGINEI_ARM9_RA_HEADER_MAGIC_LOCATION == CARDENGINEI_ARM9_RA_HEADER_MAGIC
+	 && (*(const vu32*)CARDENGINEI_ARM9_RA_FLAGS_LOCATION & CARDENGINEI_ARM9_RA_PAUSED_RECEIVER)) {
+		unsigned (*offer)(u32) = (void*)CARDENGINEI_ARM9_RA_OFFER_LOCATION;
+		raUnlockExport(sharedAddr, (u32)sharedAddr, offer, raExportClock);
+	}
+#endif
 
 	// Let ARM7 know the menu loaded
 	sharedAddr[5] = 0x59444552; // 'REDY'

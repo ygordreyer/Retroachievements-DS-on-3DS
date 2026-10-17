@@ -14,7 +14,8 @@ typedef enum raUnlockStatus {
     RA_UNLOCK_OK = 0,
     RA_UNLOCK_FULL = 1,
     RA_UNLOCK_NO_FILE = 2,
-    RA_UNLOCK_WRITE_FAILED = 3
+    RA_UNLOCK_WRITE_FAILED = 3,
+    RA_UNLOCK_READ_BUSY = 4
 } raUnlockStatus;
 
 /* ARM9 owns mailbox ID/level and publishes REQ last; ARM7 clears REQ only on RAM acceptance,

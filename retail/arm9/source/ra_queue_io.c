@@ -129,6 +129,71 @@ int raQueueReplace(const char* path, const void* data, size_t size, const raQueu
     return 0;
 }
 
+/* Preserve record bytes, including NUL-padded fields and terminal refusal marks. */
+static int queueResize(const unsigned char* input, size_t size, unsigned char* output) {
+    size_t at = 0;
+    const size_t slotWidth = size == 16 * RA_QUEUE_MAX ? 16
+        : size == 32 * RA_QUEUE_MAX ? 32 : size % RA_QUEUE_RECORD == 0 ? RA_QUEUE_RECORD : 0;
+    unsigned count = 0;
+    while (at < size) {
+        size_t start, end, digits, limit;
+        uint32_t id = 0;
+        while (at < size && input[at] == 0) ++at;
+        if (at == size) break;
+        start = at;
+        if (slotWidth && start % slotWidth) return 0;
+        limit = slotWidth ? start + slotWidth : size;
+        if (limit > start + RA_QUEUE_RECORD) limit = start + RA_QUEUE_RECORD;
+        while (at < limit && input[at] >= '0' && input[at] <= '9') {
+            unsigned digit = input[at++] - '0';
+            if (id > (UINT32_MAX - digit) / 10) return 0;
+            id = id * 10 + digit;
+        }
+        digits = at - start;
+        if (!digits || !id || at == limit || count == RA_QUEUE_MAX) return 0;
+        if (input[at] == '\t') {
+            ++at;
+            for (unsigned i = 0; i < RA_QUEUE_STAMP; ++i)
+                if (at == limit || input[at] < '0' || input[at++] > '9') return 0;
+            /* Unknown metadata stays byte-for-byte intact within its record. */
+            while (at < limit && input[at] != '\n') ++at;
+        }
+        if (at == limit || input[at] != '\n') return 0;
+        end = ++at;
+        memcpy(output + count * RA_QUEUE_RECORD, input + start, end - start);
+        if (slotWidth) {
+            size_t tail = end;
+            while (tail < limit && input[tail] == 0) ++tail;
+            if (tail == limit - 1 && input[tail] == '!') {
+                output[(count + 1) * RA_QUEUE_RECORD - 1] = '!';
+                ++tail;
+            }
+            if (tail != limit) return 0;
+            at = limit;
+        }
+        ++count;
+    }
+    return 1;
+}
+
+int raQueuePrepare(const char* path, const raQueueFileOps* ops) {
+    unsigned char* input;
+    unsigned char output[RA_QUEUE_BYTES] = {0};
+    int got, ok = 0;
+    if (!raQueueAvailable(path)) return 0;
+    input = malloc(RA_CFG_FILE_MAX);
+    if (input) {
+        got = ops->read(ops->context, path, 0, 0, input, RA_CFG_FILE_MAX);
+        if (got == RA_QUEUE_BYTES) ok = 1;
+        else if (got == -1 || (got >= 0 && got <= (int)RA_CFG_FILE_MAX
+                          && queueResize(input, (size_t)got, output)))
+            ok = raQueueReplace(path, output, sizeof(output), ops);
+        free(input);
+    }
+    if (!ok) bootState[queueDevice(path)] = 2;
+    return ok;
+}
+
 static int queueRead(void* context, const char* path, void* prefix, size_t prefixSize,
                      void* data, size_t size) {
     FILE* f = fopen(path, "rb");

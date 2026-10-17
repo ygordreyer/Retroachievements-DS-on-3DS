@@ -2386,6 +2386,9 @@ int arm7_main(void) {
 
 			tonccpy((u32*)CARDENGINEI_ARM9_RA_LOCATION, raSrc, CARDENGINEI_ARM9_RA_IMAGE_MAX);
 			raWramLoaded = (*(u32*)CARDENGINEI_ARM9_RA_LOCATION == *raSrc);
+			/* TWLSDK ARM7 cannot receive unlocks while waiting for REDY. */
+			*(u32*)CARDENGINEI_ARM9_RA_FLAGS_LOCATION =
+				(ROMsupportsDsiMode(ndsHeader) && dsiModeConfirmed) ? 0 : CARDENGINEI_ARM9_RA_PAUSED_RECEIVER;
 
 			/*
 			    Achievement definitions, if the launcher staged any. A separate copy rather

@@ -30,6 +30,96 @@ static void expect(const char* path) {
     CHECK(!memcmp(scratch, payload, sizeof(payload)));
     CHECK(stat(path, &st) == 0 && st.st_size == RA_QUEUE_BYTES);
 }
+static void put(const void* data, size_t size) {
+    FILE* f = fopen(RA_QUEUE_PATH, "wb");
+    CHECK(f != 0 && fwrite(data, 1, size, f) == size && fclose(f) == 0);
+}
+static int refuseWrite(void* context, const char* path, const void* prefix, size_t prefixSize,
+                       const void* data, size_t size, int inplace) {
+    (void)context; (void)path; (void)prefix; (void)prefixSize;
+    (void)data; (void)size; (void)inplace;
+    return 0;
+}
+
+static void prepare_cases(void) {
+    unsigned char input[RA_QUEUE_BYTES + RA_QUEUE_RECORD];
+    struct stat before, after;
+    CHECK(raQueuePrepare(RA_QUEUE_PATH, &raQueueStdFileOps));
+    expect(RA_QUEUE_PATH);
+    put(input, 0);
+    CHECK(raQueuePrepare(RA_QUEUE_PATH, &raQueueStdFileOps));
+    expect(RA_QUEUE_PATH);
+    for (unsigned width = 16; width <= 48; width += 16) {
+        size_t size = width == 48 ? 2 * width : width * RA_QUEUE_MAX;
+        memset(input, 0, sizeof(input));
+        memset(payload, 0, sizeof(payload));
+        memcpy(input, "100\n", 4);
+        memcpy(input + width, width == 16 ? "101\n" : "101\t20261016120000\n",
+               width == 16 ? 4 : 19);
+        memcpy(payload, input, 4);
+        memcpy(payload + RA_QUEUE_RECORD, input + width, width == 16 ? 4 : 19);
+        if (width == 48) input[47] = payload[47] = '!';
+        put(input, size);
+        CHECK(stat(RA_QUEUE_PATH, &before) == 0);
+        CHECK(raQueuePrepare(RA_QUEUE_PATH, &raQueueStdFileOps));
+        expect(RA_QUEUE_PATH);
+        CHECK(stat(RA_QUEUE_PATH, &after) == 0 && before.st_ino == after.st_ino);
+        CHECK(access(RA_QUEUE_PATH ".txn", F_OK) != 0);
+    }
+    memset(payload, 0, sizeof(payload));
+    memcpy(payload, "100\n", 4);
+    memcpy(payload + RA_QUEUE_RECORD, "101\n", 4);
+    put("100\n101\n", 8);
+    CHECK(raQueuePrepare(RA_QUEUE_PATH, &raQueueStdFileOps));
+    expect(RA_QUEUE_PATH);
+    for (unsigned bad = 0; bad < 8; ++bad) {
+        size_t size;
+        memset(input, 0, sizeof(input));
+        if (bad == 0) { memcpy(input, "unknown", 7); size = 7; }
+        else if (bad == 1) { memcpy(input, "100\t202610", 10); size = 10; }
+        else if (bad == 2) { memcpy(input, "4294967296\n", 11); size = 11; }
+        else if (bad == 3) {
+            size = sizeof(input);
+            for (unsigned i = 0; i <= RA_QUEUE_MAX; ++i)
+                memcpy(input + i * RA_QUEUE_RECORD, "100\n", 4);
+        } else {
+            size = 32 * RA_QUEUE_MAX;
+            memcpy(input, "100\t20261016120000", 18);
+            memcpy(input + 32, "101\n", 4);
+            if (bad == 5) memcpy(input, "100\n101\n", 8);
+            if (bad == 6) { memset(input, 0, 32); memcpy(input + 1, "100\n", 4); }
+            if (bad == 7) { input[18] = '\n'; input[31] = 'X'; }
+        }
+        put(input, size);
+        CHECK(stat(RA_QUEUE_PATH, &before) == 0);
+        CHECK(!raQueuePrepare(RA_QUEUE_PATH, &raQueueStdFileOps));
+        CHECK(!raQueueAvailable(RA_QUEUE_PATH));
+        FILE* f = fopen(RA_QUEUE_PATH, "rb");
+        unsigned char actual[sizeof(input)];
+        CHECK(f && fread(actual, 1, sizeof(actual), f) == size && fclose(f) == 0);
+        CHECK(!memcmp(input, actual, size));
+        CHECK(stat(RA_QUEUE_PATH, &after) == 0 && before.st_ino == after.st_ino && after.st_size == (off_t)size);
+        CHECK(access(RA_QUEUE_PATH ".txn", F_OK) != 0);
+        CHECK(raQueueRecover(RA_QUEUE_PATH, scratch, sizeof(scratch), &raQueueStdFileOps));
+    }
+    {
+        raQueueFileOps failing = raQueueStdFileOps;
+        failing.write = refuseWrite;
+        put("100\n", 4);
+        CHECK(!raQueuePrepare(RA_QUEUE_PATH, &failing));
+        CHECK(!raQueueAvailable(RA_QUEUE_PATH));
+        FILE* f = fopen(RA_QUEUE_PATH, "rb");
+        CHECK(f && fread(input, 1, sizeof(input), f) == 4 && fclose(f) == 0);
+        CHECK(!memcmp(input, "100\n", 4));
+        CHECK(access(RA_QUEUE_PATH ".txn", F_OK) != 0);
+        CHECK(raQueueRecover(RA_QUEUE_PATH, scratch, sizeof(scratch), &raQueueStdFileOps));
+    }
+    CHECK(remove(RA_QUEUE_PATH) == 0);
+    memset(payload, 0, sizeof(payload));
+    puts("queue prepare: missing/empty, legacy 16/32/48-byte records and text IDs migrate in place; unknown/truncated/overflow/over-capacity files untouched and disabled");
+    puts("queue prepare: unterminated legacy metadata, extra records, misalignment and invalid padding refused without changing file bytes");
+}
+
 int main(void) {
     char directory[] = "/tmp/ra-queue-boot.XXXXXX";
     struct stat before, after;
@@ -37,6 +127,7 @@ int main(void) {
     CHECK(chdir(directory) == 0);
     CHECK(mkdir("sd:", 0700) == 0);
     CHECK(mkdir("fat:", 0700) == 0);
+    prepare_cases();
     memcpy(payload, "100\n", 4);
     FILE* f = fopen(RA_QUEUE_PATH, "wb");
     CHECK(f != 0 && fputs("partial", f) >= 0 && fclose(f) == 0);

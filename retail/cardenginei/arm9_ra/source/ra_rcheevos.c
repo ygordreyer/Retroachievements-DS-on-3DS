@@ -593,7 +593,7 @@ static void ra_rc_queue_unlock(u32 id) {
     Nothing waits here. If the ARM7 has not finished, the ring keeps the id and the next frame tries
     again; there are sixty chances a second and the write is one sector.
 */
-static void ra_rc_offer_unlock(raSnapshot* snapshot) {
+static void ra_rc_offer_unlock(raSnapshot* snapshot, int paused) {
 	vu32* shared;
 
     if (unlockOffered || unlockQueued) {
@@ -660,7 +660,7 @@ static void ra_rc_offer_unlock(raSnapshot* snapshot) {
 	    rather than on the ARM7 because that binary had four bytes too few for the test; see
 	    raUnlockService().
 	*/
-	if (raCardReadPending(shared[3])) {
+	if (!paused && raCardReadPending(shared[3])) {
 		return;
 	}
 	shared[RA_SHARED_UNLOCK_ID]  = unlockRing[unlockTail];
@@ -710,6 +710,19 @@ static void ra_rc_offer_unlock(raSnapshot* snapshot) {
 	if (unlockOffered < 0xFFFF) {
 		unlockOffered++;
 	}
+}
+
+/* Called with ARM9 evaluation paused; ARM7 accepts the mailbox before REDY. */
+unsigned ra_rc_offer_paused(u32 channel) {
+    raSnapshot snapshot;
+    const raSessionBlock* session = (const raSessionBlock*)CARDENGINEI_ARM9_RA_SESSION_LOCATION;
+    if (channel != CARDENGINE_SHARED_ADDRESS_SDK1 && channel != CARDENGINE_SHARED_ADDRESS_SDK5)
+        return 0;
+    if (session->magic == RA_SESSION_MAGIC && session->queue == RA_QUEUE_LEVEL_OFF)
+        return 0;
+    snapshot.shared = channel;
+    ra_rc_offer_unlock(&snapshot, 1);
+    return unlockQueued + (RA_UNLOCK_CHANNEL(channel)[RA_SHARED_UNLOCK_REQ] != 0);
 }
 
 static void ra_rc_event_handler(const rc_runtime_event_t* runtimeEvent) {
@@ -1541,7 +1554,7 @@ static u8 ra_rc_frame_step(raSnapshot* snapshot) {
 	    runtime mid-update, and the handover writes to memory the other CPU polls -- doing it here keeps
 	    the two apart and costs one compare on a frame with nothing to send.
 	*/
-	ra_rc_offer_unlock(snapshot);
+	ra_rc_offer_unlock(snapshot, 0);
 	snapshot->unlockSent      = unlockSent;
 	snapshot->unlockSynthetic = unlockSynthetic;
 	/*

@@ -51,6 +51,10 @@ else
     exit 1
 fi
 
+"$CC" -std=gnu99 -Wall -Wextra -O1 \
+    -Itools/host-stubs -Iretail/common/include tools/ra_export_test.c -o "$RA_HOST_OUT/export"
+"$RA_HOST_OUT/export"
+
 for variant in NTR TWLSDK; do
     define=
     if [ "$variant" = TWLSDK ]; then define=-DTWLSDK; fi

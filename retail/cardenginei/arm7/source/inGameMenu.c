@@ -39,6 +39,9 @@ extern void restorePreManual(void);
 extern void saveMainScreenSetting(void);
 extern void loadInGameMenu(void);
 extern void unloadInGameMenu(void);
+#ifndef TWLSDK
+extern void raUnlockReceive(void);
+#endif
 
 extern u16 biosRead16(u32 addr);
 
@@ -66,8 +69,19 @@ void inGameMenu(void) {
 
 	int timeOut = 0;
 	while (sharedAddr[5] != 0x59444552) { // 'REDY'
+#ifdef TWLSDK
 		while (REG_VCOUNT != 191) swiDelay(100);
 		while (REG_VCOUNT == 191) swiDelay(100);
+#else
+		while (REG_VCOUNT != 191) {
+			raUnlockReceive();
+			swiDelay(100);
+		}
+		while (REG_VCOUNT == 191) {
+			raUnlockReceive();
+			swiDelay(100);
+		}
+#endif
 
 		timeOut++;
 		if (timeOut == 60*2) {

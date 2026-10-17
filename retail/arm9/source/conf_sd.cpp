@@ -2773,28 +2773,16 @@ int loadFromSD(configuration* conf, const char *bootstrapPath) {
 		fclose(srParamsFile);
 	}
 
-	/*
-	    Step 3b: the unlock queue, created here for the same reason softResetParams.bin is -- the
-	    cardengine can write into clusters that already exist and cannot allocate any, so the file has
-	    to be full length before the game boots. Zero filled; every record is empty.
-
-	    Created unconditionally, not under the WiFi switch. The two halves are independent: the
-	    cardengine can record an unlock on a build with no networking at all, and the queue simply
-	    waits for a boot that has some. Gating this on RA_LAUNCHER_WIFI would silently make earned
-	    achievements unrecordable on exactly the builds most people run.
-
-	    Rewritten only when it is the wrong size. An existing queue holds ids that have not been sent
-	    and truncating it would throw them away.
-	*/
+	/* ARM7 can append only to a preallocated queue with no outstanding redo. */
 	raUnlocksFilePath = conf->gameOnFlashcard ? RA_QUEUE_PATH_FAT : RA_QUEUE_PATH;
-	if (raQueueAvailable(raUnlocksFilePath.c_str())
-	 && getFileSize(raUnlocksFilePath.c_str()) != RA_QUEUE_BYTES) {
-		FILE* queueFile = fopen(raUnlocksFilePath.c_str(), "wb");
-
-		if (queueFile) {
-			fseek(queueFile, RA_QUEUE_BYTES - 1, SEEK_SET);
-			fputc('\0', queueFile);
-			fclose(queueFile);
+	if (!raQueuePrepare(raUnlocksFilePath.c_str(), &raQueueStdFileOps)) {
+		nocashMessage("RA queue size/format unavailable; game queue disabled (NO_FILE)");
+		FILE* log = fopen(conf->gameOnFlashcard ? "fat:/ra_queue_recovery.log"
+		                                      : "sd:/ra_queue_recovery.log", "ab");
+		if (log) {
+			fprintf(log, "Queue preparation failed: %s; game queue disabled (RA_UNLOCK_NO_FILE)\n",
+			        raUnlocksFilePath.c_str());
+			fclose(log);
 		}
 	}
 

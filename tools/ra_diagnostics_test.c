@@ -6,6 +6,7 @@
 
 #include "ra_rc_frame.h"
 #include "locations.h"
+#include "ra_unlock_export.h"
 
 static vu32 testChannel[CARDENGINE_SHARED_SLOTS];
 #define RA_UNLOCK_CHANNEL(address) testChannel
@@ -71,6 +72,11 @@ static uint16_t clock_line(void* unused) {
     return 192;
 }
 
+static unsigned exportTicks;
+static uint16_t exportClock(void) {
+    return ++exportTicks % RA_UNLOCK_EXPORT_LINES;
+}
+
 static void run(void) {
     CHECK(ra_rc_frame_run(&frameState, &runtime, ra_rc_event_handler, ra_rc_peek,
         NULL, clock_line, NULL));
@@ -79,7 +85,54 @@ static void run(void) {
         == frameState.diagnostics.frames_evaluated * frameState.diagnostics.active_triggers);
 }
 
+static void paused_handoff(void) {
+    static const u32 ids[] = {100, 101, 102};
+    raSnapshot snapshot = {0};
+    memset((void*)testChannel, 0, sizeof(testChannel));
+    unlockHead = unlockTail = unlockQueued = unlockOffered = 0;
+    testSession.magic = RA_SESSION_MAGIC;
+    testSession.queue = RA_QUEUE_LEVEL_FULL;
+    testSession.hardcore = 1;
+    snapshot.shared = CARDENGINE_SHARED_ADDRESS_SDK1;
+    for (unsigned i = 0; i < 3; ++i) ra_rc_queue_unlock(ids[i]);
+    ra_rc_offer_unlock(&snapshot, 0);
+    CHECK(unlockQueued == 2 && testChannel[RA_SHARED_UNLOCK_ID] == ids[0]);
+    CHECK(ra_rc_offer_paused(snapshot.shared) == 3);
+    CHECK(unlockQueued == 2 && testChannel[RA_SHARED_UNLOCK_ID] == ids[0]);
+    exportTicks = 0;
+    raUnlockExport(testChannel, snapshot.shared, ra_rc_offer_paused, exportClock);
+    CHECK(exportTicks <= (RA_UNLOCK_EXPORT_IDLE_FRAMES + 1) * RA_UNLOCK_EXPORT_LINES);
+    CHECK(unlockQueued == 2 && unlockRing[unlockTail] == ids[1]);
+    CHECK(testChannel[RA_SHARED_UNLOCK_ID] == ids[0]);
+    CHECK(testChannel[RA_SHARED_UNLOCK_REQ] == RA_SHARED_UNLOCK_HARDCORE);
+    /* A card read marker cannot stall the paused RAM-only handoff. */
+    testChannel[3] = 0x025FFB08;
+    for (unsigned i = 1; i < 3; ++i) {
+        testChannel[RA_SHARED_UNLOCK_REQ] = 0;
+        CHECK(ra_rc_offer_paused(snapshot.shared) == 3 - i);
+        CHECK(testChannel[RA_SHARED_UNLOCK_ID] == ids[i]);
+        CHECK(testChannel[RA_SHARED_UNLOCK_REQ] == RA_SHARED_UNLOCK_HARDCORE);
+    }
+    testChannel[RA_SHARED_UNLOCK_REQ] = 0;
+    CHECK(ra_rc_offer_paused(snapshot.shared) == 0 && unlockQueued == 0);
+    ra_rc_queue_unlock(103);
+    testSession.queue = RA_QUEUE_LEVEL_OFF;
+    CHECK(ra_rc_offer_paused(snapshot.shared) == 0 && unlockQueued == 1);
+    CHECK(ra_rc_offer_paused(0) == 0 && unlockQueued == 1);
+    testSession.magic = 0;
+    CHECK(ra_rc_offer_paused(snapshot.shared) == 1 && unlockQueued == 0);
+    CHECK(testChannel[RA_SHARED_UNLOCK_ID] == 103);
+    CHECK(testChannel[RA_SHARED_UNLOCK_REQ] == RA_SHARED_UNLOCK_MAGIC);
+    testChannel[RA_SHARED_UNLOCK_REQ] = 0;
+    CHECK(ra_rc_offer_paused(snapshot.shared) == 0);
+    unlockHead = unlockTail = unlockQueued = unlockOffered = 0;
+    memset((void*)testChannel, 0, sizeof(testChannel));
+    memset(&testSession, 0, sizeof(testSession));
+    puts("exit handoff: busy mailbox retained, paused ring offered in order once, mode and queue-off preserved");
+}
+
 int main(void) {
+    paused_handoff();
     raSnapshot snapshot = {0};
     unsigned i;
     const u32 id = RA_SYNTHETIC_ID_BASE + 100;
@@ -163,27 +216,27 @@ int main(void) {
         unlockHead = unlockTail = 0;
         for (u32 id = 1; id <= 128; ++id) ra_rc_queue_unlock(id);
         CHECK(unlockQueued == 128 && unlockLost == 0);
-        ra_rc_offer_unlock(&snapshot);
+        ra_rc_offer_unlock(&snapshot, 0);
         CHECK(channel[RA_SHARED_UNLOCK_ID] == 1 && unlockOffered == 1);
         CHECK(unlockSent == 0 && unlockPublished.pending == 128);
         channel[RA_SHARED_UNLOCK_REQ] = 0;
         channel[RA_SHARED_UNLOCK_PROGRESS] = 1;
-        ra_rc_offer_unlock(&snapshot);
+        ra_rc_offer_unlock(&snapshot, 0);
         CHECK(unlockPublished.accepted == 1 && unlockSent == 0);
         CHECK(unlockPublished.pending == 128 && unlockOffered == 2);
         channel[RA_SHARED_UNLOCK_PROGRESS] = 1u << 16;
-        ra_rc_offer_unlock(&snapshot);
+        ra_rc_offer_unlock(&snapshot, 0);
         CHECK(unlockSent == 1 && unlockPublished.pending == 127);
         while (unlockQueued) {
             channel[RA_SHARED_UNLOCK_REQ] = 0;
-            ra_rc_offer_unlock(&snapshot);
+            ra_rc_offer_unlock(&snapshot, 0);
         }
         channel[RA_SHARED_UNLOCK_REQ] = 0;
-        ra_rc_offer_unlock(&snapshot);
+        ra_rc_offer_unlock(&snapshot, 0);
         CHECK(unlockPublished.accepted == 128 && unlockPublished.committed == 1);
         CHECK(unlockPublished.pending == 127 && unlockLost == 0);
         channel[RA_SHARED_UNLOCK_PROGRESS] = 128u << 16;
-        ra_rc_offer_unlock(&snapshot);
+        ra_rc_offer_unlock(&snapshot, 0);
         CHECK(unlockSent == 128 && unlockPublished.pending == 0);
         CHECK(unlockPublished.magic == RA_UNLOCK_DIAGNOSTICS_MAGIC);
         CHECK(unlockPublished.version == 1 && unlockPublished.size == sizeof(unlockPublished));

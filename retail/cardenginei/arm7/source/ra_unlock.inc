@@ -99,7 +99,10 @@ static void raUnlockService(void) {
         if (status != RA_UNLOCK_OK) return;
 #else
         const unsigned count = sharedAddr[RA_SHARED_UNLOCK_PROGRESS] & 255u;
-        if (count >= RA_UNLOCK_PENDING_MAX) return;
+        if (count >= RA_UNLOCK_PENDING_MAX) {
+            raUnlockProgress(count, RA_UNLOCK_FULL, 0);
+            return;
+        }
         raUnlockPending[count] = sharedAddr[RA_SHARED_UNLOCK_ID]
             | (req == RA_SHARED_UNLOCK_HARDCORE ? RA_UNLOCK_HARDCORE_BIT : 0);
         raUnlockProgress(count + 1,
@@ -110,6 +113,12 @@ static void raUnlockService(void) {
 }
 
 #ifndef TWLSDK
+static bool resume_cardRead_arm9(void);
+
+void raUnlockReceive(void) {
+    raUnlockService();
+}
+
 static __attribute__((noinline)) raUnlockStatus raUnlockDrain(void) {
     unsigned count = sharedAddr[RA_SHARED_UNLOCK_PROGRESS] & 255u;
     unsigned done = 0;
@@ -117,6 +126,11 @@ static __attribute__((noinline)) raUnlockStatus raUnlockDrain(void) {
     int oldIME;
     if (!count) return RA_UNLOCK_OK;
     oldIME = enterCriticalSection();
+    if (readOngoing) {
+        raUnlockProgress(count, RA_UNLOCK_READ_BUSY, 0);
+        leaveCriticalSection(oldIME);
+        return RA_UNLOCK_READ_BUSY;
+    }
     while (done < count) {
         const u32 packed = raUnlockPending[done];
         status = raUnlockAppend(packed & ~RA_UNLOCK_HARDCORE_BIT, raStampCache,
@@ -135,8 +149,27 @@ static __attribute__((noinline)) raUnlockStatus raUnlockDrain(void) {
 static __attribute__((noinline)) void raUnlockDrainExit(void) {
     unsigned retries = 3;
     raUnlockStatus status;
+    if (readOngoing) {
+        const int oldIME = enterCriticalSection();
+        unsigned elapsed = 0;
+        unsigned previous = REG_VCOUNT;
+        /* VCOUNT advances with IME off; 60 frames allow about one second. */
+        while (readOngoing && elapsed < 263u * 60) {
+            unsigned current;
+            resume_cardRead_arm9();
+            current = REG_VCOUNT;
+            elapsed += current >= previous ? current - previous : 263u + current - previous;
+            previous = current;
+        }
+        leaveCriticalSection(oldIME);
+    }
     do {
+        raUnlockService();
         status = raUnlockDrain();
+        if (status == RA_UNLOCK_OK && sharedAddr[RA_SHARED_UNLOCK_REQ]) {
+            raUnlockService();
+            status = raUnlockDrain();
+        }
         if (status != RA_UNLOCK_WRITE_FAILED && status != RA_UNLOCK_NO_FILE) break;
         prevSect[0] = prevSect[1] = -1;
     } while (retries--);

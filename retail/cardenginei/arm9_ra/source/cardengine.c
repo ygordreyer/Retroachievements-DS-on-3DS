@@ -46,6 +46,7 @@ extern u32 ra_sbrk_probe(void);
 
 /* retail/cardenginei/arm9_ra/source/ra_rcheevos.c -- the RetroAchievements runtime. */
 extern void ra_rc_tick(raSnapshot* snapshot);
+extern unsigned ra_rc_offer_paused(u32 channel);
 /* ...and where it left the rendered notification, or 0 before the first unlock. */
 extern const void* ra_rc_text(void);
 
@@ -439,6 +440,11 @@ static void ra_install_defaults(raSnapshot* snapshot) {
     Runs in the game's VCOUNT interrupt handler, so the same rules apply here as in the
     cardengine: short, and no blocking.
 */
+unsigned ra_wram_offer(u32 channel) {
+    ra_startup(__bss_start, __bss_end, (char*)CARDENGINEI_ARM9_RA_DEFS_LOCATION);
+    return ra_rc_offer_paused(channel);
+}
+
 void ra_wram_tick(raSnapshot* snapshot) {
 	u8 resolved = 0;
 	u8 stage;

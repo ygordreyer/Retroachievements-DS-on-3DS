@@ -32,7 +32,7 @@ void ra_rc_record_disabled(raRcFrameState* state, uint32_t id, uint32_t address)
  * other_transitions counts the remaining evaluation state transitions in the last frame.
  * Unsupported is latched until the session ends.
  * Room ends at line 263 for blanking starts, or at line 192 for late starts.
- * The clock returns VCOUNT in [0, 262]; each memref pass or trigger stride must take
+ * The clock returns VCOUNT in [0, 262]; each stride of memrefs or triggers must take
  * less than one frame. Elapsed cost accumulates across wraps, saturated at 0xFFFF. */
 int ra_rc_frame_run(raRcFrameState* state, rc_runtime_t* runtime,
                     rc_runtime_event_handler_t handler, rc_runtime_peek_t peek,

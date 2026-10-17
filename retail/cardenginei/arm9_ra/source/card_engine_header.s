@@ -3,11 +3,8 @@
 @ in the ARM9 cardengine's 12K window. Loaded into DSi WRAM and called once per
 @ frame; see docs/retroachievements.md.
 @
-@ The layout is the colour LUT's, deliberately, because the loader recognises it:
-@ the first word must be a branch, so `*(u16*)(location + 2)` reads 0xEA00 and an
-@ unloaded window -- which holds whatever was there before -- can be told apart from
-@ real code. The flags word at +4 is there for the launcher to write configuration
-@ into before the binary is copied across, the same way the colour LUT receives its.
+@ The first branch preserves the colour LUT loader contract. Flags at +4 are set by
+@ the loader; RAO1 at +12 identifies the paused offer entry at +8.
 @---------------------------------------------------------------------------------
 	.section ".init"
 @---------------------------------------------------------------------------------
@@ -21,6 +18,9 @@ card_engine_start:
 .global raWramFlags
 raWramFlags:
 .word 0
+
+	b ra_wram_offer
+.word 0x314F4152 @ RAO1
 
 .pool
 

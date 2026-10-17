@@ -18,6 +18,40 @@ static void ra_rc_sample_clock(raRcFrameState* state, raRcFrameClock clock,
     state->cost = (uint16_t)(cost > 0xFFFF ? 0xFFFF : cost);
 }
 
+static void ra_rc_update_memrefs(raRcFrameState* state, rc_memrefs_t* memrefs,
+                                 rc_runtime_peek_t peek, void* userdata,
+                                 raRcFrameClock clock, void* clock_userdata,
+                                 uint16_t* previous) {
+    rc_memref_list_t* list = &memrefs->memrefs;
+    rc_modified_memref_list_t* modified = &memrefs->modified_memrefs;
+    unsigned samples = 0;
+    do {
+        for (uint16_t i = 0; i < list->count; ++i) {
+            rc_memref_t* ref = &list->items[i];
+            if (ref->value.type != RC_VALUE_TYPE_NONE)
+                rc_update_memref_value(&ref->value,
+                    rc_peek_value(ref->address, ref->value.size, peek, userdata));
+            if (++samples == RA_RC_CLOCK_STRIDE) {
+                ra_rc_sample_clock(state, clock, clock_userdata, previous);
+                samples = 0;
+            }
+        }
+        list = list->next;
+    } while (list);
+    if (modified->count) do {
+        for (uint16_t i = 0; i < modified->count; ++i) {
+            rc_modified_memref_t* ref = &modified->items[i];
+            rc_update_memref_value(&ref->memref.value,
+                rc_get_modified_memref_value(ref, peek, userdata));
+            if (++samples == RA_RC_CLOCK_STRIDE) {
+                ra_rc_sample_clock(state, clock, clock_userdata, previous);
+                samples = 0;
+            }
+        }
+        modified = modified->next;
+    } while (modified);
+}
+
 static void ra_rc_do_frame(raRcFrameState* state, rc_runtime_t* runtime,
                            rc_runtime_event_handler_t handler, rc_runtime_peek_t peek,
                            void* userdata, raRcFrameClock clock, void* clock_userdata,
@@ -30,7 +64,7 @@ static void ra_rc_do_frame(raRcFrameState* state, rc_runtime_t* runtime,
     state->current_trigger_id = 0;
     state->diagnostics.active_triggers = 0;
     event.value = 0;
-    rc_update_memref_values(runtime->memrefs, peek, userdata);
+    ra_rc_update_memrefs(state, runtime->memrefs, peek, userdata, clock, clock_userdata, previous);
     ra_rc_sample_clock(state, clock, clock_userdata, previous);
     for (i = (int32_t)runtime->trigger_count - 1; i >= 0; --i) {
         rc_trigger_t* trigger = runtime->triggers[i].trigger;

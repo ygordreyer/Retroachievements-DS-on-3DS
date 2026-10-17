@@ -25,6 +25,8 @@ int raQueueRecover(const char* path, void* scratch, size_t size, const raQueueFi
 int raQueueReplace(const char* path, const void* data, size_t size, const raQueueFileOps* ops);
 int raQueueBootRecover(const char* path);
 int raQueueAvailable(const char* path);
+/* Resize recognized records through the journal; preserve unknown files and disable appends. */
+int raQueuePrepare(const char* path, const raQueueFileOps* ops);
 extern const raQueueFileOps raQueueStdFileOps;
 #ifdef __cplusplus
 }

@@ -18,11 +18,21 @@ static char disk[RA_QUEUE_BYTES];
 static char raStampCache[] = "20261016120000";
 static char raGameCode[] = "TEST", raGameTitle[] = "DURABILITY  ";
 static int readFail, writeFail, writes, transientWrites, transientReads, criticalEnters, failOnWrite;
-#ifdef TWLSDK
 static int readOngoing;
+static int ime = 1;
+static int enterCriticalSection(void) { int old = ime; ime = 0; ++criticalEnters; return old; }
+static void leaveCriticalSection(int old) { CHECK(ime == 0); ime = old; }
+#ifndef TWLSDK
+static unsigned vcount, resumeCalls, readCompletesAfter;
+#define REG_VCOUNT vcount
+static bool resume_cardRead_arm9(void) {
+    CHECK(ime == 0 && readOngoing && writes == 0);
+    ++resumeCalls;
+    vcount = (vcount + 1) % 263;
+    if (readCompletesAfter && resumeCalls == readCompletesAfter) readOngoing = 0;
+    return !readOngoing;
+}
 #endif
-static int enterCriticalSection(void) { ++criticalEnters; return 1; }
-static void leaveCriticalSection(int old) { CHECK(old == 1); }
 #define toncset memset
 #define tonccpy memmove
 static u32 fileRead(char* out, int* file, u32 at, u32 n) {
@@ -34,6 +44,7 @@ static u32 fileRead(char* out, int* file, u32 at, u32 n) {
 }
 static u32 fileWrite(const char* in, int* file, u32 at, u32 n) {
     (void)file;
+    CHECK(!readOngoing);
     ++writes;
     CHECK(at + n <= sizeof(disk));
     if (writeFail || transientWrites || writes == failOnWrite) {
@@ -49,6 +60,12 @@ static u32 fileWrite(const char* in, int* file, u32 at, u32 n) {
 static void reset(void) {
     memset(channel, 0, sizeof(channel));
     memset(disk, 0, sizeof(disk));
+    readOngoing = 0;
+    ime = 1;
+#ifndef TWLSDK
+    vcount = 260;
+    resumeCalls = readCompletesAfter = 0;
+#endif
     raUnlockStateMagic = 0;
     raUnlocksCluster = 1;
     readFail = writeFail = writes = transientWrites = transientReads = criticalEnters = failOnWrite = 0;
@@ -101,6 +118,37 @@ int main(void) {
     CHECK(channel[RA_SHARED_UNLOCK_REQ] == 0);
     puts("unlock TWL: failed append retains mailbox, retry commits once");
 #else
+    reset(); offer(100);
+    sharedAddr[RA_SHARED_UNLOCK_ID] = 101;
+    sharedAddr[RA_SHARED_UNLOCK_LEVEL] = RA_QUEUE_LEVEL_FULL;
+    sharedAddr[RA_SHARED_UNLOCK_REQ] = RA_SHARED_UNLOCK_HARDCORE;
+    raUnlockDrainExit();
+    CHECK(pending() == 0 && committed() == 2 && writes == 2);
+    CHECK(sharedAddr[RA_SHARED_UNLOCK_REQ] == 0);
+    CHECK(strtoul(disk, 0, 10) == 100);
+    CHECK(strtoul(disk + RA_QUEUE_RECORD, 0, 10) == 101);
+    raUnlockDrainExit();
+    CHECK(committed() == 2 && writes == 2);
+    reset(); offer(100); readOngoing = 1;
+    CHECK(raUnlockDrain() == RA_UNLOCK_READ_BUSY);
+    CHECK(pending() == 1 && committed() == 0 && writes == 0 && status() == RA_UNLOCK_READ_BUSY);
+    CHECK(raUnlockStateMagic == 0);
+    CHECK(resumeCalls == 0);
+    readCompletesAfter = 5;
+    ime = 0;
+    raUnlockDrainExit();
+    CHECK(pending() == 0 && committed() == 1 && writes == 1 && status() == RA_UNLOCK_OK);
+    CHECK(resumeCalls == 5 && !readOngoing && ime == 0);
+    CHECK(strtoul(disk, 0, 10) == 100);
+    reset(); offer(100); readOngoing = 1;
+    raUnlockDrainExit();
+    CHECK(pending() == 1 && committed() == 0 && writes == 0 && status() == RA_UNLOCK_READ_BUSY);
+    CHECK(raUnlockStateMagic == 0);
+    CHECK(resumeCalls == 263u * 60 && readOngoing && ime == 1);
+    readOngoing = 0;
+    raUnlockDrainExit();
+    CHECK(pending() == 0 && committed() == 1 && writes == 1);
+    puts("unlock exit: mailbox accepted once; read completion with IME off commits IDs; 60-frame timeout retains READ_BUSY without writes");
     for (int fault = 0; fault < 4; ++fault) {
         reset();
         offer(100);

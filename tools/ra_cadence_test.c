@@ -108,7 +108,7 @@ static void cadence(unsigned count, unsigned scenario) {
     rc_runtime_t actual, reference;
     raRcFrameState state = {0};
     Memory a = {{0}, {0}}, r = {{0}, {0}};
-    Clock clock = {192, 10, 0, 2 + count / RA_RC_CLOCK_STRIDE};
+    Clock clock = {192, 10, 0, 2 + 2 * (count / RA_RC_CLOCK_STRIDE)};
     unsigned frame, i, total_triggered = 0;
 
     activate(&actual, count, suffix[scenario]);
@@ -276,7 +276,7 @@ static void heavy_budget(void) {
     static const unsigned costs[] = {263, 273, 600};
     rc_runtime_t runtime;
     Memory memory = {{0}, {0}};
-    Clock clock = {192, 0, 0, 2 + 24 / RA_RC_CLOCK_STRIDE};
+    Clock clock = {192, 0, 0, 2 + 2 * (24 / RA_RC_CLOCK_STRIDE)};
     unsigned c, frame;
 
     activate(&runtime, 24, "=1.100000.");
@@ -300,6 +300,33 @@ static void heavy_budget(void) {
     }
     rc_runtime_destroy(&runtime);
     puts("budget: costs of 263, 273 and 600 scanlines accumulate and latch after 30 overruns");
+}
+
+typedef struct UnevenClock {
+    Memory memory;
+    unsigned elapsed;
+} UnevenClock;
+static uint32_t uneven_peek(uint32_t address, uint32_t size, void* userdata) {
+    UnevenClock* clock = userdata;
+    clock->elapsed += 10;
+    return peek(address, size, &clock->memory);
+}
+static uint16_t uneven_scanline(void* userdata) {
+    UnevenClock* clock = userdata;
+    return (192 + clock->elapsed) % RA_RC_SCANLINES_PER_FRAME;
+}
+static void uneven_budget(void) {
+    rc_runtime_t runtime;
+    raRcFrameState state = {0};
+    UnevenClock clock = {{{0}, {0}}, 0};
+    activate(&runtime, 28, "=1.100000.");
+    CHECK(ra_rc_frame_run(&state, &runtime, actual_event, uneven_peek, &clock,
+                          uneven_scanline, &clock));
+    CHECK(clock.elapsed == 280 && clock.elapsed % RA_RC_SCANLINES_PER_FRAME == 17);
+    CHECK(state.cost == 280 && state.room == 71 && state.overruns == 1);
+    for (unsigned i = 0; i < 28; ++i) CHECK(clock.memory.reads[i] == 1);
+    rc_runtime_destroy(&runtime);
+    puts("budget: uneven 280-line memref pass reports an overrun instead of 17 lines");
 }
 
 static void saturated_budget(void) {
@@ -416,6 +443,7 @@ int main(void) {
             cadence(sizes[i], scenario);
     budget();
     heavy_budget();
+    uneven_budget();
     saturated_budget();
     disabled_and_null();
     printf("cadence: PASSED (%u checks)\n", checks);
