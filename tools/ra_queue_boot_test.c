@@ -72,7 +72,76 @@ static void prepare_cases(void) {
     put("100\n101\n", 8);
     CHECK(raQueuePrepare(RA_QUEUE_PATH, &raQueueStdFileOps));
     expect(RA_QUEUE_PATH);
-    for (unsigned bad = 0; bad < 8; ++bad) {
+    {
+        size_t size = 0;
+        memset(payload, 0, sizeof(payload));
+        for (unsigned id = 100; id <= 111; ++id) {
+            int n = snprintf((char*)input + size, sizeof(input) - size, "%u\n", id);
+            CHECK(n == 4);
+            memcpy(payload + (id - 100) * RA_QUEUE_RECORD, input + size, (size_t)n);
+            size += (size_t)n;
+        }
+        CHECK(size == 48);
+        put(input, size);
+        CHECK(raQueuePrepare(RA_QUEUE_PATH, &raQueueStdFileOps));
+        expect(RA_QUEUE_PATH);
+    }
+    for (unsigned width = 16; width <= 48; width += 16) {
+        const char* first = width == 16 ? "100\n" : "100\t20261016120000\n";
+        memset(input, 0, sizeof(input));
+        memset(payload, 0, sizeof(payload));
+        memcpy(input, first, strlen(first));
+        memcpy(input + width, "101\n", 4);
+        memcpy(payload, first, strlen(first));
+        memcpy(payload + RA_QUEUE_RECORD, "101\n", 4);
+        put(input, width * RA_QUEUE_MAX - 1);
+        CHECK(raQueuePrepare(RA_QUEUE_PATH, &raQueueStdFileOps));
+        expect(RA_QUEUE_PATH);
+    }
+    {
+        static const char* const text[] = {
+            "100 101", "100\r\n101\r\n", "  100,101  ",
+            "# 999 was earned\n100\n101\n"
+        };
+        memset(payload, 0, sizeof(payload));
+        memcpy(payload, "100\n", 4);
+        memcpy(payload + RA_QUEUE_RECORD, "101\n", 4);
+        for (unsigned i = 0; i < sizeof(text) / sizeof(text[0]); ++i) {
+            put(text[i], strlen(text[i]));
+            CHECK(raQueuePrepare(RA_QUEUE_PATH, &raQueueStdFileOps));
+            expect(RA_QUEUE_PATH);
+        }
+    }
+    {
+        static const char arm7[] = "100\t20261016120000\tABCD\tCONTRA 4\0\0\0\0\t1\n";
+        memset(input, 0, sizeof(input));
+        memset(payload, 0, sizeof(payload));
+        memcpy(input, arm7, sizeof(arm7) - 1);
+        memcpy(payload, arm7, sizeof(arm7) - 1);
+        put(input, 2 * RA_QUEUE_RECORD);
+        CHECK(raQueuePrepare(RA_QUEUE_PATH, &raQueueStdFileOps));
+        expect(RA_QUEUE_PATH);
+    }
+    {
+        static const char text[] = "100\t20261016120000\r\n101\t20261016120000\tABCD\tCONTRA 4\t1\r\n";
+        memset(payload, 0, sizeof(payload));
+        memcpy(payload, text, 20);
+        memcpy(payload + RA_QUEUE_RECORD, text + 20, sizeof(text) - 21);
+        put(text, sizeof(text) - 1);
+        CHECK(raQueuePrepare(RA_QUEUE_PATH, &raQueueStdFileOps));
+        expect(RA_QUEUE_PATH);
+    }
+    {
+        memset(input, 0, sizeof(input));
+        memset(payload, 0, sizeof(payload));
+        memcpy(input, "100\n", 4);
+        memcpy(payload, "100\n", 4);
+        /* All three padded widths validate with the same record. */
+        put(input, 2 * RA_QUEUE_RECORD);
+        CHECK(raQueuePrepare(RA_QUEUE_PATH, &raQueueStdFileOps));
+        expect(RA_QUEUE_PATH);
+    }
+    for (unsigned bad = 0; bad < 13; ++bad) {
         size_t size;
         memset(input, 0, sizeof(input));
         if (bad == 0) { memcpy(input, "unknown", 7); size = 7; }
@@ -89,6 +158,20 @@ static void prepare_cases(void) {
             if (bad == 5) memcpy(input, "100\n101\n", 8);
             if (bad == 6) { memset(input, 0, 32); memcpy(input + 1, "100\n", 4); }
             if (bad == 7) { input[18] = '\n'; input[31] = 'X'; }
+            if (bad == 8) size--;
+            if (bad == 9) {
+                memset(input, 0, sizeof(input));
+                memcpy(input, "100\t20261016120000\n", 19);
+                memcpy(input + size - 32, "101\n", 4);
+                size--;
+            }
+            if (bad == 10 || bad == 11) {
+                size = bad == 10 ? 31 : 47;
+                memset(input, 0, sizeof(input));
+                memcpy(input, bad == 10 ? "100\n" : "100\t20261016120000\n", bad == 10 ? 4 : 19);
+                memcpy(input + size - 15, "101\n", 4);
+            }
+            if (bad == 12) { size = 8; memcpy(input, "100\0" "101\n", size); }
         }
         put(input, size);
         CHECK(stat(RA_QUEUE_PATH, &before) == 0);
@@ -117,7 +200,8 @@ static void prepare_cases(void) {
     CHECK(remove(RA_QUEUE_PATH) == 0);
     memset(payload, 0, sizeof(payload));
     puts("queue prepare: missing/empty, legacy 16/32/48-byte records and text IDs migrate in place; unknown/truncated/overflow/over-capacity files untouched and disabled");
-    puts("queue prepare: unterminated legacy metadata, extra records, misalignment and invalid padding refused without changing file bytes");
+    puts("queue prepare: 48-byte text keeps all 12 IDs; NUL-only partial tails migrate; text separators and ARM7 padded fields preserved");
+    puts("queue prepare: unterminated metadata, nonempty partial slots, extra records, misalignment and invalid padding refused byte-identically");
 }
 
 int main(void) {

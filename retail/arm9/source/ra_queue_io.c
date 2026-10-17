@@ -129,20 +129,38 @@ int raQueueReplace(const char* path, const void* data, size_t size, const raQueu
     return 0;
 }
 
-/* Preserve record bytes, including NUL-padded fields and terminal refusal marks. */
-static int queueResize(const unsigned char* input, size_t size, unsigned char* output) {
+static int queueTextSeparator(unsigned char ch) {
+    return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' || ch == ',';
+}
+
+/* A padded record must end within its complete slot; a partial tail must be empty. */
+static int queueLayout(const unsigned char* input, size_t size, size_t slotWidth,
+                       unsigned char* output) {
     size_t at = 0;
-    const size_t slotWidth = size == 16 * RA_QUEUE_MAX ? 16
-        : size == 32 * RA_QUEUE_MAX ? 32 : size % RA_QUEUE_RECORD == 0 ? RA_QUEUE_RECORD : 0;
     unsigned count = 0;
+    if (!slotWidth && memchr(input, 0, size)) return 0;
+    memset(output, 0, RA_QUEUE_BYTES);
     while (at < size) {
         size_t start, end, digits, limit;
+        int metadata = 0;
         uint32_t id = 0;
-        while (at < size && input[at] == 0) ++at;
-        if (at == size) break;
+        if (slotWidth) {
+            limit = at + slotWidth;
+            if (limit > size || input[at] == 0) {
+                if (limit > size) limit = size;
+                while (at < limit && input[at] == 0) ++at;
+                if (at != limit) return 0;
+                continue;
+            }
+        } else {
+            if (queueTextSeparator(input[at])) { ++at; continue; }
+            if (input[at] == '#') {
+                while (at < size && input[at] != '\n') ++at;
+                continue;
+            }
+            limit = size;
+        }
         start = at;
-        if (slotWidth && start % slotWidth) return 0;
-        limit = slotWidth ? start + slotWidth : size;
         if (limit > start + RA_QUEUE_RECORD) limit = start + RA_QUEUE_RECORD;
         while (at < limit && input[at] >= '0' && input[at] <= '9') {
             unsigned digit = input[at++] - '0';
@@ -150,21 +168,46 @@ static int queueResize(const unsigned char* input, size_t size, unsigned char* o
             id = id * 10 + digit;
         }
         digits = at - start;
-        if (!digits || !id || at == limit || count == RA_QUEUE_MAX) return 0;
-        if (input[at] == '\t') {
+        if (!digits || !id || count == RA_QUEUE_MAX) return 0;
+        if (at < limit && input[at] == '\t') {
+            unsigned field = 0;
+            size_t newline, metadataEnd;
+            metadata = 1;
             ++at;
             for (unsigned i = 0; i < RA_QUEUE_STAMP; ++i)
                 if (at == limit || input[at] < '0' || input[at++] > '9') return 0;
-            /* Unknown metadata stays byte-for-byte intact within its record. */
-            while (at < limit && input[at] != '\n') ++at;
+            newline = at;
+            while (newline < limit && input[newline] != '\n') ++newline;
+            if (newline == limit) return 0;
+            metadataEnd = newline;
+            if (!slotWidth && metadataEnd > at && input[metadataEnd - 1] == '\r') --metadataEnd;
+            /* Only game fields may contain NULs, and only as their trailing padding. */
+            while (at < metadataEnd) {
+                size_t fieldStart, fieldWidth = field == 0 ? RA_QUEUE_CODE
+                    : field == 1 ? RA_QUEUE_TITLE : RA_QUEUE_RECORD;
+                if (input[at++] != '\t') return 0;
+                fieldStart = at;
+                while (at < metadataEnd && input[at] && input[at] != '\t') ++at;
+                if (field < 2) while (at < metadataEnd && input[at] == 0) ++at;
+                if (at - fieldStart > fieldWidth || (at < metadataEnd && input[at] != '\t')) return 0;
+                ++field;
+            }
+            at = newline;
         }
-        if (at == limit || input[at] != '\n') return 0;
-        end = ++at;
+        if (!slotWidth && !metadata) {
+            if (at < size && !queueTextSeparator(input[at]) && input[at] != '#') return 0;
+            if (digits >= RA_QUEUE_RECORD) return 0;
+            end = at;
+        } else {
+            if (at == limit || input[at] != '\n') return 0;
+            end = ++at;
+        }
         memcpy(output + count * RA_QUEUE_RECORD, input + start, end - start);
+        if (!slotWidth && !metadata) output[count * RA_QUEUE_RECORD + digits] = '\n';
         if (slotWidth) {
             size_t tail = end;
             while (tail < limit && input[tail] == 0) ++tail;
-            if (tail == limit - 1 && input[tail] == '!') {
+            if (slotWidth == RA_QUEUE_RECORD && tail == limit - 1 && input[tail] == '!') {
                 output[(count + 1) * RA_QUEUE_RECORD - 1] = '!';
                 ++tail;
             }
@@ -174,6 +217,22 @@ static int queueResize(const unsigned char* input, size_t size, unsigned char* o
         ++count;
     }
     return 1;
+}
+
+/* Accept multiple layouts only when all record bytes and refusal marks agree. */
+static int queueResize(const unsigned char* input, size_t size, unsigned char* output) {
+    static const size_t widths[] = {16, 32, RA_QUEUE_RECORD, 0};
+    unsigned char* candidate = malloc(RA_QUEUE_BYTES);
+    int found = 0;
+    if (!candidate) return 0;
+    for (unsigned i = 0; i < sizeof(widths) / sizeof(widths[0]); ++i) {
+        if (!queueLayout(input, size, widths[i], candidate)) continue;
+        if (found && memcmp(output, candidate, RA_QUEUE_BYTES)) { found = 0; break; }
+        memcpy(output, candidate, RA_QUEUE_BYTES);
+        found = 1;
+    }
+    free(candidate);
+    return found;
 }
 
 int raQueuePrepare(const char* path, const raQueueFileOps* ops) {
