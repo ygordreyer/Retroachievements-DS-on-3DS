@@ -367,6 +367,7 @@ clean:
 	@$(MAKE) -C cardenginei/arm7_cheat clean
 	@$(MAKE) -C cardenginei/arm7_cheatonly clean
 	@$(MAKE) -C cardenginei/arm9_colorlut clean
+	@$(MAKE) -C cardenginei/arm9_ra clean
 	@$(MAKE) -C cardenginei/arm9_igm clean
 	@$(MAKE) -C cardenginei/arm9 clean
 	@$(MAKE) -C cardenginei/arm9_gsdd clean
