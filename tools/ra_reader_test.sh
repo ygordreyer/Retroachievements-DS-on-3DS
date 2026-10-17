@@ -62,6 +62,13 @@ EOF
 # The file list mirrors the whitelist in retail/cardenginei/arm9_ra/Makefile -- the
 # runtime, not the whole library. -lm is for fmod(), which rcheevos' modulus operator
 # references whether or not any definition uses it.
+#
+# -lpthread is for rc_compat.c's mutex wrappers, and it is needed on the toolchain this
+# project pins rather than on a current one. glibc 2.34 folded the pthread symbols into
+# libc, so on anything newer the link succeeds without asking, and on the Debian bullseye
+# image the tree builds against (glibc 2.31) it fails on pthread_mutexattr_init. Asking
+# for it explicitly is correct on both: on 2.34+ the library is a stub that resolves to
+# nothing. Nothing here is threaded -- rcheevos compiles the wrappers regardless.
 RC=retail/cardenginei/arm9_ra/rcheevos
 if [ ! -f "$RC/include/rc_runtime.h" ]; then
 	echo "$RC is empty -- run: git submodule update --init" >&2
@@ -89,7 +96,7 @@ $CC -std=gnu99 -Wall -Wno-unused-function -Wno-pointer-to-int-cast -Wno-int-to-p
 	retail/arm9/source/ra_wifi_verdict.c \
 	retail/cardenginei/arm9_ra/source/ra_text.c \
 	retail/cardenginei/arm9_ra/source/ra_overlay.c \
-	-lm -o "$out/ra_reader_test"
+	-lm -lpthread -o "$out/ra_reader_test"
 
 set +e
 "$out/ra_reader_test"
@@ -125,7 +132,7 @@ $CC -std=gnu99 -Wall -O1 \
 	retail/arm9/source/ra_patch.c retail/arm9/source/ra_queue.c \
 	"$RC"/src/rhash/md5.c "$RC"/src/rhash/hash.c "$RC"/src/rhash/hash_rom.c \
 	"$RC"/src/rc_util.c "$RC"/src/rc_compat.c \
-	-o "$out/ra_launcher_test"
+	-lpthread -o "$out/ra_launcher_test"
 
 set +e
 "$out/ra_launcher_test" || status=1
@@ -166,7 +173,7 @@ $CC -std=gnu99 -Wall -O1 \
 	$rc_runtime_sources \
 	"$RC"/src/rc_util.c "$RC"/src/rc_compat.c "$RC"/src/rc_version.c \
 	"$RC"/src/rhash/md5.c \
-	-lm -o "$out/ra_fit_test"
+	-lm -lpthread -o "$out/ra_fit_test"
 
 set +e
 "$out/ra_fit_test" || status=1
