@@ -75,7 +75,7 @@
 #define slowSoftReset BIT(11)
 #define wideCheatUsed BIT(12)
 #define isSdk5 BIT(13)
-#define hasVramWifiBinary BIT(14)
+// #define hasVramWifiBinary BIT(14)
 #define twlTouch BIT(15)
 #define cloneboot BIT(16)
 #define sleepMode BIT(17)
@@ -527,6 +527,7 @@ void reset(const bool downloadedSrl) {
 		*(u32*)0x02000004 = 0x54455352; // 'RSET'
 		unlaunchSetFilename();
 		readSoftResetId(false);
+		i2cWriteRegister(0x4A, 0x12, i2cReadRegister(0x4A, 0x12) | 1); // 3DS - is_twl - Do not trust gbatek for this register - Thanks TuxSH!
 		i2cWriteRegister(0x4A, 0x70, 0x01);
 		i2cWriteRegister(0x4A, 0x11, 0x01);			// Reboot game
 		leaveCriticalSection(oldIME);
@@ -813,6 +814,7 @@ static inline void rebootConsole(void) {
 		writePowerManagement(0x10, readCommand); // Reboot console
 		return;
 	}
+	i2cWriteRegister(0x4A, 0x12, i2cReadRegister(0x4A, 0x12) | 1); // 3DS - is_twl - Do not trust gbatek for this register - Thanks TuxSH!
 	i2cWriteRegister(0x4A, 0x70, 0x01);
 	i2cWriteRegister(0x4A, 0x11, 0x01);
 }
@@ -944,6 +946,7 @@ void returnToLoader(bool reboot) {
 	getFileFromCluster(&file, quitFileCluster, (valueBits & quitOnFlashcard));
 	if (file.firstCluster == CLUSTER_FREE) {
 		// File not found, so reboot console instead
+		i2cWriteRegister(0x4A, 0x12, i2cReadRegister(0x4A, 0x12) | 1); // 3DS - is_twl - Do not trust gbatek for this register - Thanks TuxSH!
 		i2cWriteRegister(0x4A, 0x70, 0x01);
 		i2cWriteRegister(0x4A, 0x11, 0x01);
 	}

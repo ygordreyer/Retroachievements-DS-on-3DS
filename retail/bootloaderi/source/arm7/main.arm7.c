@@ -91,7 +91,7 @@ extern bool moreMemory;
 //extern u32 _start;
 extern u32 storedFileCluster;
 extern u32 initDisc;
-extern u16 bootstrapOnFlashcard;
+extern u8 bootstrapOnFlashcard;
 extern u8 gameOnFlashcard;
 extern u8 saveOnFlashcard;
 extern u8 saveRelocation;
@@ -147,6 +147,9 @@ int sharedFontRegion = 0;
 u8 wifiLedState = 0;
 bool i2cBricked = false;
 
+u32 aesKey1[4] = {0};
+u32 aesKey2[4] = {0};
+
 //bool gbaRomFound = false;
 
 u32 ce7Location = CARDENGINEI_ARM7_LOCATION;
@@ -183,7 +186,6 @@ u32 baseChipID = 0;
 u32 romPaddingSize = 0;
 bool pkmnHeader = false;
 bool pkmnGen5 = false;
-bool dsiWareAsSlot1 = false;
 bool ndmaDisabled = false;
 bool sharedWramEnabled = false;
 bool colorLutEnabled = false;
@@ -334,6 +336,13 @@ static void resetMemory_ARM7(void) {
 	REG_IPC_SYNC = 0;
 	REG_IPC_FIFO_CR = IPC_FIFO_ENABLE | IPC_FIFO_SEND_CLEAR;
 	REG_IPC_FIFO_CR = 0;
+
+	if (swiCRC16(0xFFFF, (u32*)0x03FFC5C0, 0x10) == 0xF44E) {
+		tonccpy(aesKey1, (u32*)0x03FFC5C0, 0x10); // Back up AES KEY1
+	}
+	if (swiCRC16(0xFFFF, (u32*)0x03FFC5B0, 0x10) == 0x17BE) {
+		tonccpy(aesKey2, (u32*)0x03FFC5B0, 0x10); // Back up AES KEY2
+	}
 
 	//if(dsiMode) {
 		memset_addrs_arm7(0x03000000, 0x03800000 + 0x10000);
@@ -1372,6 +1381,13 @@ static void setMemoryAddress(const tNDSHeader* ndsHeader, const module_params_t*
 			tonccpy((u8*)deviceListAddr+0x3C0, ndsPath, 18);*/
 		}
 
+		if (aesKey1[0] != 0) {
+			tonccpy((u32*)0x04004470, aesKey1, 0x10); // Set AES KEY1
+		}
+		if (aesKey2[0] != 0) {
+			tonccpy((u32*)0x040044A0, aesKey2, 0x10); // Set AES KEY2
+		}
+
 		if (isDSiWare) {
 			tonccpy((u32*)0x02FFD000, (u32*)DSI_HEADER_SDK5, 0x7B0);	// Make a duplicate of DSi header
 		}
@@ -1734,7 +1750,6 @@ int arm7_main(void) {
 		dsiModeConfirmed = dsiMode && ROMsupportsDsiMode(&dsiHeaderTemp.ndshdr);
 	}
 	const char* romTid = getRomTid(&dsiHeaderTemp.ndshdr);
-	dsiWareAsSlot1 = (isDSiWare && (dsiHeaderTemp.total_rom_size >= 0x04000000 || !scfgSdmmcEnabled || (REG_SCFG_ROM & BIT(9))));
 	if (!isDSiWare || dsiWareAsSlot1) {
 		extern u32 clusterCacheSize;
 		clusterCacheSize = (ROMsupportsDsiMode(&dsiHeaderTemp.ndshdr) && dsiModeConfirmed) ? 0x17B0 : 0x3000;
@@ -2482,7 +2497,7 @@ int arm7_main(void) {
 			ce9Location = *ce9Src;
 			tonccpy((u32*)ce9Location, ce9Src, ce9size);
 		}
-		ce9DldiBinary = gameOnFlashcard && (strncmp(romTid, "ASC", 3) == 0 || pkmnGen5 || strncmp(romTid, "KAD", 3) == 0);
+		ce9DldiBinary = gameOnFlashcard && altReadMethod;
 		if (ce9DldiBinary) {
 			const u32 ce9DldiOffset = !laterSdk ? CARDENGINEI_ARM9_LOCATION2_DLDI_DRIVER : CARDENGINEI_ARM9_LOCATION_DLDI_DRIVER;
 			if (!dldiPatchBinary((data_t*)ce9Location, ce9size, (data_t*)((ROMsupportsDsiMode(ndsHeader) && dsiModeConfirmed && _io_dldi_size < 0xF) ? ce9Location+0x3800 : ce9DldiOffset))) {
@@ -2657,9 +2672,9 @@ int arm7_main(void) {
 			loadNitroFileInfoIntoRAM(ndsHeader, romFile);
 		}
 
-		if (gameOnFlashcard && isDSiWare) {
+		if (isDSiWare && dsiWareAsSlot1) {
 			aFile* sharedFontFile = (aFile*)FONT_FILE_LOCATION_TWLSDK;
-			getFileFromCluster(sharedFontFile, sharedFontCluster, true);
+			getFileFromCluster(sharedFontFile, sharedFontCluster, bootstrapOnFlashcard);
 			buildFatTableCacheCompressed(sharedFontFile);
 		}
 

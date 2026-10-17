@@ -22,6 +22,14 @@ static const char* getSdatPath(const char* romTid) {
 	} else if (strncmp(romTid, "IPK", 3) == 0
 			|| strncmp(romTid, "IPG", 3) == 0) {
 		return "rom:/data/sound/gs_sound_data.sdat";
+	} else if (strncmp(romTid, "A6C", 3) == 0 // MegaMan Star Force
+			|| strncmp(romTid, "A6B", 3) == 0 
+			|| strncmp(romTid, "A6A", 3) == 0
+			|| strncmp(romTid, "YRV", 3) == 0 // MegaMan Star Force 2
+			|| strncmp(romTid, "YRW", 3) == 0
+			|| strncmp(romTid, "CRB", 3) == 0 // MegaMan Star Force 3
+			|| strncmp(romTid, "CRR", 3) == 0) {
+		return "rom:/datbin/com/sound_data.sdat";
 	} else if (strncmp(romTid, "ASC", 3) == 0) { // Sonic Rush
 		return "rom:/snd/sys/sound_data.sdat";
 	} else if (strncmp(romTid, "BJM", 3) == 0	// Stitch Jam
@@ -34,7 +42,17 @@ static const char* getSdatPath(const char* romTid) {
 }
 
 static u32 getSdatStrmId(const char* romTid) {
-	if (strncmp(romTid, "ASC", 3) == 0) { // Sonic Rush
+	if (strncmp(romTid, "A6C", 3) == 0 // MegaMan Star Force
+			|| strncmp(romTid, "A6B", 3) == 0 
+			|| strncmp(romTid, "A6A", 3) == 0) {
+		return 0x77;
+	} else if (strncmp(romTid, "YRV", 3) == 0 // MegaMan Star Force 2
+			|| strncmp(romTid, "YRW", 3) == 0) {
+		return 0xA6;
+	} else if (strncmp(romTid, "CRB", 3) == 0 // MegaMan Star Force 3
+			|| strncmp(romTid, "CRR", 3) == 0) {
+		return 0x16F;
+	} else if (strncmp(romTid, "ASC", 3) == 0) { // Sonic Rush
 		return 0x69;
 	} else if (strcmp(romTid, "AOSJ") == 0) { // Osu! Tatakae! Ouendan
 		return 0x102;
@@ -158,18 +176,19 @@ bool loadPreLoadSettings(configuration* conf, const char* pckPath, const char* r
 }
 
 void loadAsyncLoadSettings(configuration* conf, const char* romTid, const u16 headerCRC) {
+	if (conf->asyncCardRead == 0) {
+		return;
+	}
+
 	// Set data to be asynchrously loadable
 	FILE *file = NULL;
 	u32 sizeOverride = 0;
-	u32 sdatFileId = 0xFFFFFFFF;
+	u32 sdatFileId = getSdatStrmId(romTid);
 	bool readStrmFile = false;
 
-	if (strncmp(romTid, "ASC", 3) == 0 // Sonic Rush
-	 || strcmp(romTid, "AOSJ") == 0 // Osu! Tatakae! Ouendan
-	 || strncmp(romTid, "AYG", 3) == 0) { // Yu-Gi-Oh!: Nightmare Troubadour
+	if (sdatFileId != 0xFFFFFFFF) {
 		if (romFSInit(conf->ndsPath)) {
 			file = fopen(getSdatPath(romTid), "rb");
-			sdatFileId = getSdatStrmId(romTid);
 			readStrmFile = true;
 		}
 	} /* else if (strncmp(romTid, "DSY", 3) == 0) { // System Flaw

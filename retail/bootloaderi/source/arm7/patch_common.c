@@ -43,7 +43,6 @@ extern bool scfgSdmmcEnabled;
 extern u8 dsiSD;
 extern bool i2cBricked;
 extern int sharedFontRegion;
-extern bool dsiWareAsSlot1;
 extern bool colorLutEnabled;
 
 #define nopT 0x46C0
@@ -58,7 +57,7 @@ void dsiWarePatch(cardengineArm9* ce9, const tNDSHeader* ndsHeader) {
 	const char* dataPub = "dataPub:";
 	const char* dataPrv = "dataPrv:";
 
-	const bool sdmmcMode = (scfgSdmmcEnabled && !(REG_SCFG_ROM & BIT(9)));
+	const bool sdmmcMode = (scfgSdmmcEnabled && !dsiWareAsSlot1 && !(REG_SCFG_ROM & BIT(9)));
 	const bool dsiWramBlocked = (!dsiWramAccess || colorLutEnabled);
 
 	const bool isUsa = (romTid[3] == 'E');
@@ -88,9 +87,9 @@ void dsiWarePatch(cardengineArm9* ce9, const tNDSHeader* ndsHeader) {
 	const u32* dsiSaveRead = ce9->patches->dsiSaveRead;
 	const u32* dsiSaveWrite = ce9->patches->dsiSaveWrite;
 
-	const bool twlFontFound = ((sharedFontRegion == 0 && !gameOnFlashcard && !i2cBricked) || twlSharedFont);
-	//const bool chnFontFound = ((sharedFontRegion == 1 && !gameOnFlashcard && !i2cBricked) || chnSharedFont);
-	const bool korFontFound = ((sharedFontRegion == 2 && !gameOnFlashcard && !i2cBricked) || korSharedFont);
+	const bool twlFontFound = ((sharedFontRegion == 0 && !dsiWareAsSlot1 && !gameOnFlashcard && !i2cBricked) || twlSharedFont);
+	//const bool chnFontFound = ((sharedFontRegion == 1 && !dsiWareAsSlot1 && !gameOnFlashcard && !i2cBricked) || chnSharedFont);
+	const bool korFontFound = ((sharedFontRegion == 2 && !dsiWareAsSlot1 && !gameOnFlashcard && !i2cBricked) || korSharedFont);
 
 #ifdef LOADERTYPE0
 	// GO Series: 10 Second Run (USA)
@@ -14411,6 +14410,43 @@ void dsiWarePatch(cardengineArm9* ce9, const tNDSHeader* ndsHeader) {
 	// Starship Defender (Japan)
 	else if (strncmp(romTid, "KDY", 3) == 0 && dsiWramBlocked) {
 		toncset16((u16*)(isJpn ? 0x020A767C : 0x020A76C4), nopT, 0x4A/sizeof(u16)); // Do not use DSi WRAM
+
+		// Overlay code patch (Part of .pck file)
+		/* if (!isJpn) {
+			if (*(u32*)0x0220ED88 == 0xF6B79300) {
+				*(u16*)0x0220ED8A = 0x2001; // movs r0, #1 (dsiSaveGetArcSrc)
+				*(u16*)0x0220ED8C = nopT; // nop
+				setBLXThumb(0x0220EDA6, (u32)dsiSaveOpen);
+				setBLXThumb(0x0220EDB2, (u32)dsiSaveCreate);
+				setBLXThumb(0x0220EDBC, (u32)dsiSaveOpen);
+				setBLXThumb(0x0220EDD0, (u32)dsiSaveClose);
+				setBLXThumb(0x0220EDE8, (u32)dsiSaveWrite);
+				setBLXThumb(0x0220EDF6, (u32)dsiSaveClose);
+				doubleNopT(0x0220EE02); // dsiSaveFlush
+				setBLXThumb(0x0220EE08, (u32)dsiSaveClose);
+				setBLXThumb(0x0220EE2E, (u32)dsiSaveOpen);
+				setBLXThumb(0x0220EE48, (u32)dsiSaveRead);
+				setBLXThumb(0x0220EE58, (u32)dsiSaveClose);
+				setBLXThumb(0x0220EE64, (u32)dsiSaveClose);
+			}
+		} else {
+			if (*(u32*)0x0220ED48 == 0xF6B79300) {
+				*(u16*)0x0220ED4A = 0x2001; // movs r0, #1 (dsiSaveGetArcSrc)
+				*(u16*)0x0220ED4C = nopT; // nop
+				setBLXThumb(0x0220ED66, (u32)dsiSaveOpen);
+				setBLXThumb(0x0220ED72, (u32)dsiSaveCreate);
+				setBLXThumb(0x0220ED7C, (u32)dsiSaveOpen);
+				setBLXThumb(0x0220ED90, (u32)dsiSaveClose);
+				setBLXThumb(0x0220EDA8, (u32)dsiSaveWrite);
+				setBLXThumb(0x0220EDB6, (u32)dsiSaveClose);
+				doubleNopT(0x0220EDC2); // dsiSaveFlush
+				setBLXThumb(0x0220EDC8, (u32)dsiSaveClose);
+				setBLXThumb(0x0220EDEE, (u32)dsiSaveOpen);
+				setBLXThumb(0x0220EE08, (u32)dsiSaveRead);
+				setBLXThumb(0x0220EE18, (u32)dsiSaveClose);
+				setBLXThumb(0x0220EE24, (u32)dsiSaveClose);
+			}
+		} */
 	}
 
 	// SteamWorld Tower Defense (USA)
@@ -16036,6 +16072,24 @@ void dsiWarePatch(cardengineArm9* ce9, const tNDSHeader* ndsHeader) {
 		// Speed up file loading by 0.5 seconds
 		// *(u16*)0x020B13D0 = 0x2001; // movs r0, #1
 		// *(u16*)0x020B13D2 = nopT;
+
+		// Overlay code patch (Part of .pck file)
+		/* if (*(u32*)0x0219F334 == 0xF7249300) {
+			*(u16*)0x0219F336 = 0x2001; // movs r0, #1 (dsiSaveGetArcSrc)
+			*(u16*)0x0219F338 = nopT; // nop
+			setBLXThumb(0x0219F352, (u32)dsiSaveOpen);
+			setBLXThumb(0x0219F35E, (u32)dsiSaveCreate);
+			setBLXThumb(0x0219F368, (u32)dsiSaveOpen);
+			setBLXThumb(0x0219F37C, (u32)dsiSaveClose);
+			setBLXThumb(0x0219F394, (u32)dsiSaveWrite);
+			setBLXThumb(0x0219F3A2, (u32)dsiSaveClose);
+			doubleNopT(0x0219F3AE); // dsiSaveFlush
+			setBLXThumb(0x0219F3B4, (u32)dsiSaveClose);
+			setBLXThumb(0x0219F3DA, (u32)dsiSaveOpen);
+			setBLXThumb(0x0219F3F4, (u32)dsiSaveRead);
+			setBLXThumb(0x0219F404, (u32)dsiSaveClose);
+			setBLXThumb(0x0219F410, (u32)dsiSaveClose);
+		} */
 	}
 
 	// Yummy Yummy Cooking Jam (USA)
@@ -16363,9 +16417,9 @@ void patchBinary(cardengineArm9* ce9, const tNDSHeader* ndsHeader, module_params
 	const u32* dsiSaveRead = ce9->patches->dsiSaveRead;
 	const u32* dsiSaveWrite = ce9->patches->dsiSaveWrite;
 
-	const bool twlFontFound = ((sharedFontRegion == 0 && !gameOnFlashcard) || twlSharedFont);
-	//const bool chnFontFound = ((sharedFontRegion == 1 && !gameOnFlashcard) || chnSharedFont);
-	//const bool korFontFound = ((sharedFontRegion == 2 && !gameOnFlashcard) || korSharedFont);
+	const bool twlFontFound = ((sharedFontRegion == 0 && !dsiWareAsSlot1 && !gameOnFlashcard && !i2cBricked) || twlSharedFont);
+	//const bool chnFontFound = ((sharedFontRegion == 1 && !dsiWareAsSlot1 && !gameOnFlashcard && !i2cBricked) || chnSharedFont);
+	//const bool korFontFound = ((sharedFontRegion == 2 && !dsiWareAsSlot1 && !gameOnFlashcard && !i2cBricked) || korSharedFont);
 
 	// The World Ends With You (USA/Europe)
 	if (strcmp(romTid, "AWLE") == 0 || strcmp(romTid, "AWLP") == 0) {

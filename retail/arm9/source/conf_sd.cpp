@@ -487,6 +487,9 @@ static void load_conf(configuration* conf, const char* fn) {
 	// SDNAND
 	conf->sdNand = strtol(config_file.fetch("NDS-BOOTSTRAP", "SDNAND", "0").c_str(), NULL, 0);
 
+	// Slot-1 mode for DSiWare
+	conf->dsiWareSlot1Mode = strtol(config_file.fetch("NDS-BOOTSTRAP", "DSIWARE_SLOT1_MODE", "0").c_str(), NULL, 0);
+
 	if (dsiFeatures()) {
 		// DSi mode
 		conf->dsiMode = strtol(config_file.fetch("NDS-BOOTSTRAP", "DSI_MODE", "1").c_str(), NULL, 0);
@@ -535,28 +538,20 @@ static void load_conf(configuration* conf, const char* fn) {
 	fclose(romFile);
 
 	// Async card read
-	switch(strtol(config_file.fetch("NDS-BOOTSTRAP", "ASYNC_CARD_READ", "-1").c_str(), NULL, 0)) {
-		case 0:
-			conf->asyncCardRead = false;
-			break;
-		case 1:
-			conf->asyncCardRead = true;
-			break;
-		default:
+	conf->asyncCardRead = strtol(config_file.fetch("NDS-BOOTSTRAP", "ASYNC_CARD_READ", "-1").c_str(), NULL, 0);
+	if (conf->asyncCardRead == -1) {
 #ifdef DEFAULT_ASYNC_CARD_READ
 			// TODO: If the list gets large enough, switch to bsearch().
 			for (unsigned int i = 0; i < sizeof(asyncReadExcludeList)/sizeof(asyncReadExcludeList[0]); i++) {
 				if (memcmp(gameTid, asyncReadExcludeList[i], 3) == 0) {
 					// Found match
-					conf->asyncCardRead = false;
+					conf->asyncCardRead = 0;
 					break;
 				}
 			}
-			conf->asyncCardRead = true;
-#else
-			conf->asyncCardRead = false;
+			conf->asyncCardRead = 1;
 #endif
-			break;
+			conf->asyncCardRead = 1;
 	}
 
 	// Card read DMA
@@ -983,8 +978,11 @@ int loadFromSD(configuration* conf, const char *bootstrapPath) {
 	if (conf->logging) {
 		conf->valueBits |= BIT(7);
 	}
-	if (conf->asyncCardRead) {
-		conf->valueBits2 |= BIT(1);
+	if (conf->asyncCardRead == 1) {
+		conf->valueBits4 |= BIT(1); // asyncCardReadMinimal
+	}
+	if (conf->asyncCardRead == 2) {
+		conf->valueBits2 |= BIT(1); // asyncCardRead
 	}
 	if (conf->cardReadDMA) {
 		conf->valueBits2 |= BIT(2);
@@ -995,9 +993,6 @@ int loadFromSD(configuration* conf, const char *bootstrapPath) {
 	if (conf->boostCpu) {
 		conf->valueBits3 |= BIT(0);
 	}
-	/*if (conf->cardReadDMA == 2) {
-		conf->valueBits3 |= BIT(1);
-	}*/
 	if (conf->sleepMode) {
 		conf->valueBits3 |= BIT(2);
 	}
@@ -1012,18 +1007,6 @@ int loadFromSD(configuration* conf, const char *bootstrapPath) {
 				conf->valueBits3 |= BIT(1);
 			}
 			fclose(pit);
-		}
-	}
-
-	if (!conf->gameOnFlashcard) {
-		if (access("sd:/_nds/nds-bootstrap/TWLFontTable.dat", F_OK) == 0) {
-			conf->valueBits3 |= BIT(3);
-		}
-		if (access("sd:/_nds/nds-bootstrap/CHNFontTable.dat", F_OK) == 0) {
-			conf->valueBits3 |= BIT(4);
-		}
-		if (access("sd:/_nds/nds-bootstrap/KORFontTable.dat", F_OK) == 0) {
-			conf->valueBits3 |= BIT(5);
 		}
 	}
 
@@ -1143,7 +1126,9 @@ int loadFromSD(configuration* conf, const char *bootstrapPath) {
 	bool donorLoaded = false;
 	conf->isDSiWare = (dsiFeatures() && !conf->b4dsMode && ((unitCode == 3 && (accessControl & BIT(4)))
 					|| (unitCode == 2 && conf->dsiMode && romTid[0] == 'K')));
-	const bool dsiWareAsSlot1 = (conf->isDSiWare && (totalRomSize >= 0x04000000 || !scfgSdmmcEnabled || !isDSiMode()));
+	if (conf->isDSiWare && (totalRomSize >= 0x04000000 || conf->dsiWareSlot1Mode || !scfgSdmmcEnabled || !isDSiMode())) {
+		conf->valueBits4 |= BIT(0);
+	}
 	bool dsiEnhancedMbk = false;
 	bool b4dsDebugRam = false;
 	bool romFSInited = false;
@@ -1166,19 +1151,19 @@ int loadFromSD(configuration* conf, const char *bootstrapPath) {
 		conf->valueBits2 |= BIT(0);
 	}
 
-	if (conf->gameOnFlashcard && (conf->isDSiWare || (accessControl & BIT(4)))) {
+	if (conf->isDSiWare || (accessControl & BIT(4))) {
 		if (romTid[3] == 'K') {
-			sharedFontPath = "fat:/_nds/nds-bootstrap/KORFontTable.dat";
+			sharedFontPath = (conf->bootstrapOnFlashcard || conf->b4dsMode) ? "fat:/_nds/nds-bootstrap/KORFontTable.dat" : "sd:/_nds/nds-bootstrap/KORFontTable.dat";
 			if (access(sharedFontPath.c_str(), F_OK) == 0) {
 				conf->valueBits3 |= BIT(5);
 			}
 		} else if (romTid[3] == 'C') {
-			sharedFontPath = "fat:/_nds/nds-bootstrap/CHNFontTable.dat";
+			sharedFontPath = (conf->bootstrapOnFlashcard || conf->b4dsMode) ? "fat:/_nds/nds-bootstrap/CHNFontTable.dat" : "sd:/_nds/nds-bootstrap/CHNFontTable.dat";
 			if (access(sharedFontPath.c_str(), F_OK) == 0) {
 				conf->valueBits3 |= BIT(4);
 			}
 		} else {
-			sharedFontPath = "fat:/_nds/nds-bootstrap/TWLFontTable.dat";
+			sharedFontPath = (conf->bootstrapOnFlashcard || conf->b4dsMode) ? "fat:/_nds/nds-bootstrap/TWLFontTable.dat" : "sd:/_nds/nds-bootstrap/TWLFontTable.dat";
 			if (access(sharedFontPath.c_str(), F_OK) == 0) {
 				conf->valueBits3 |= BIT(3);
 			}
@@ -1595,7 +1580,7 @@ int loadFromSD(configuration* conf, const char *bootstrapPath) {
 			}
 		}
 
-		if (isDSiMode() && unitCode > 0 && !dsiWareAsSlot1) {
+		if (isDSiMode() && unitCode > 0 && !(conf->valueBits4 & BIT(0))) {
 			const bool sdNandFound = conf->sdNand && (access(conf->gameOnFlashcard ? "fat:/shared1" : "sd:/shared1", F_OK) == 0);
 			const bool sdPhotoFound = conf->sdNand && (access(conf->gameOnFlashcard ? "fat:/photo" : "sd:/photo", F_OK) == 0);
 
@@ -1676,7 +1661,7 @@ int loadFromSD(configuration* conf, const char *bootstrapPath) {
 			fclose(twlCfgFile);
 		}
 
-		if (!conf->isDSiWare || dsiWareAsSlot1) {
+		if (!conf->isDSiWare || (conf->valueBits4 & BIT(0))) {
 			// Load external cheat engine binary
 			loadCardEngineBinary("nitro:/cardenginei_arm7_cheat.bin", (u8*)CHEAT_ENGINE_BUFFERED_LOCATION);
 
@@ -1686,6 +1671,7 @@ int loadFromSD(configuration* conf, const char *bootstrapPath) {
 			const bool altReadMethod =
 			(
 				(strncmp(romTid, "KAD", 3) == 0 && conf->saveOnFlashcard) // Art Style: BASE 10 (Fixes soft-lock when saving)
+			 || strncmp(romTid, "AMC", 3) == 0 // Mario Kart DS (Fixes slowdown in some areas)
 			 || strncmp(romTid, "ADA", 3) == 0 // Pokémon Gen 4 (Fixes random freezing)
 			 || strncmp(romTid, "APA", 3) == 0
 			 || strncmp(romTid, "CPU", 3) == 0
@@ -2759,7 +2745,7 @@ int loadFromSD(configuration* conf, const char *bootstrapPath) {
 			}
 		}
 
-		if (!isDSiMode() || dsiWareAsSlot1) {
+		if (!isDSiMode() || (conf->valueBits4 & BIT(0))) {
 			loadDSi2DSSavePatch(conf, bootstrapPath, romTid, romVersion, headerCRC);
 		}
 	} else {
@@ -3040,7 +3026,7 @@ int loadFromSD(configuration* conf, const char *bootstrapPath) {
 	// Create AP-fixed overlay binary
 	createApFixOverlayBin(conf);
 
-	if ((!dsiFeatures() || conf->b4dsMode) || dsiWareAsSlot1 || !conf->isDSiWare) {
+	if ((!dsiFeatures() || conf->b4dsMode) || (conf->valueBits4 & BIT(0)) || !conf->isDSiWare) {
 		// Update modified date
 		FILE *savFile = fopen(conf->savPath, "r+");
 		if (savFile) {

@@ -296,7 +296,7 @@ static bool patchCardRead(cardengineArm9* ce9, const tNDSHeader* ndsHeader, cons
     dbg_hexa((u32)ce9);
     dbg_printf("\n");
 
-	/* extern u16 bootstrapOnFlashcard;
+	/* extern u8 bootstrapOnFlashcard;
 	extern u32 apPatchPostCardReadFileCluster;
 	extern u32 apPatchPostCardReadOffset;
 	extern u32 apPatchPostCardReadSize;
@@ -960,6 +960,7 @@ static bool getSleep(cardengineArm9* ce9, const tNDSHeader* ndsHeader, const mod
 	const char* romTid = getRomTid(ndsHeader);
 
 	if (ce9DldiBinary || ROMinRAM
+	 || strncmp(romTid, "VC6", 3) == 0 // CSI: Unsolved!
 	 || strncmp(romTid, "YDQ", 3) == 0 // Dragon Quest XI: Sentinels of the Starry Skies
 	) {
 		return false;
@@ -1343,10 +1344,12 @@ void patchMpuInitTwl(const tNDSHeader* ndsHeader) {
 	dbg_printf("\n\n");
 }
 
-bool patchStrmPageLoad(cardengineArm9* ce9, const tNDSHeader* ndsHeader, const module_params_t* moduleParams) {
+bool patchStrmPageLoad(cardengineArm9* ce9, const tNDSHeader* ndsHeader, const module_params_t* moduleParams, u32 ROMinRAM) {
 	const char* romTid = getRomTid(ndsHeader);
 
-	if (moduleParams->sdk_version < 0x3000000
+	if ((!asyncCardRead && !asyncCardReadMinimal)
+	 || ce9DldiBinary || ROMinRAM
+	 || moduleParams->sdk_version < 0x3000000
 	 || strncmp(romTid, "YDQ", 3) == 0 // Dragon Quest XI: Sentinels of the Starry Skies
 	) {
 		return false;
@@ -1977,8 +1980,6 @@ void patchSharedFontPath(const cardengineArm9* ce9, const tNDSHeader* ndsHeader,
 	dbg_hexa((u32)offset);
 	dbg_printf("\n\n");
 
-	extern bool dsiWareAsSlot1;
-
 	if (dsiWareAsSlot1) {
 		extern u32 iUncompressedSizei;
 
@@ -2364,7 +2365,7 @@ static void twlSaveSetTBranch(const u32 patchData0, const u32 patchData1) {
 }
 
 void patchTwlSaveFuncs(const cardengineArm9* ce9) {
-	extern u16 bootstrapOnFlashcard;
+	extern u8 bootstrapOnFlashcard;
 	extern u32 dsi2dsSavePatchFileCluster;
 	extern u32 dsi2dsSavePatchOffset;
 	extern u32 dsi2dsSavePatchSize;
@@ -3253,9 +3254,10 @@ u32 patchCardNdsArm9(cardengineArm9* ce9, const tNDSHeader* ndsHeader, const mod
 		patchCardReadDma(ce9, ndsHeader, moduleParams, usesThumb);
 	} else {
 		const bool cardSetDmaPatched = patchCardSetDma(ce9, ndsHeader, moduleParams, usesThumb, ROMinRAM);
+		const bool strmPageLoadPatched = patchStrmPageLoad(ce9, ndsHeader, moduleParams, ROMinRAM);
 		extern u32 asyncDataAddr[2];
 
-		if (!cardSetDmaPatched || (!ce9DldiBinary && !ROMinRAM && (patchStrmPageLoad(ce9, ndsHeader, moduleParams) || asyncDataAddr[0]) && !sleepFound)) {
+		if (!cardSetDmaPatched || ((strmPageLoadPatched || asyncDataAddr[0]) && !sleepFound)) {
 			patchCardReadDma(ce9, ndsHeader, moduleParams, usesThumb);
 		}
 		if (!patchCardEndReadDma(ce9, ndsHeader, moduleParams, usesThumb, ROMinRAM)) {
@@ -3287,7 +3289,9 @@ u32 patchCardNdsArm9(cardengineArm9* ce9, const tNDSHeader* ndsHeader, const mod
 
 	//setFlushCache(ce9, patchMpuRegion, usesThumb);
 
-	patchMobiclipFrameLoad(ce9, ndsHeader, moduleParams);
+	if (asyncCardRead || asyncCardReadMinimal) {
+		patchMobiclipFrameLoad(ce9, ndsHeader, moduleParams);
+	}
 
 	extern bool colorLutEnabled;
 	if (colorLutEnabled) {
