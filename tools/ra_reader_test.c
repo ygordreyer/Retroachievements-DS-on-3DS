@@ -30,6 +30,11 @@
 #include <string.h>
 #include <sys/mman.h>
 
+#ifndef __linux__
+/* Syntax checks on other hosts still require the Linux-only runtime declaration. */
+extern int memfd_create(const char* name, unsigned int flags);
+#endif
+
 /*
     __bss_start, __bss_end and __vram_top are NOT defined here. The runner supplies them with
     --defsym, as absolute addresses inside the real DSi WRAM window this test mmaps below, and
@@ -844,10 +849,10 @@ int main(void) {
 	CHECK(__builtin_offsetof(raSnapshot, ticks) == 0x04);
 	CHECK(__builtin_offsetof(raSnapshot, deniedNoLayer) == 0x14);
 	CHECK(__builtin_offsetof(raSnapshot, watchCount) == 0x18);
-	/* Took one of the three bytes reserved at 0x25; the bytes beside rcLinesMax are spent. */
-	CHECK(__builtin_offsetof(raSnapshot, rcMemrefLines) == 0x25);
+	/* Repurposed diagnostics retain their byte positions for external readers. */
+	CHECK(__builtin_offsetof(raSnapshot, rcRoom) == 0x25);
 	CHECK(__builtin_offsetof(raSnapshot, raMpuBits) == 0x26);
-	CHECK(__builtin_offsetof(raSnapshot, rcMemrefMin) == 0x27);
+	CHECK(__builtin_offsetof(raSnapshot, rcCostHigh) == 0x27);
 	CHECK(__builtin_offsetof(raSnapshot, linesMax) == 0x1B);
 	CHECK(__builtin_offsetof(raSnapshot, wramMagic) == 0x1C);
 	CHECK(__builtin_offsetof(raSnapshot, wramTicks) == 0x20);
@@ -863,7 +868,9 @@ int main(void) {
 	    are untouched. It is the field that says how deep rcheevos went on the stack this binary
 	    now gives it -- see the note in ra.h about the IRQ stack it was borrowing before.
 	*/
-	CHECK(__builtin_offsetof(raSnapshot, rcParts) == 0x69);
+	CHECK(__builtin_offsetof(raSnapshot, rcOverruns) == 0x69);
+	CHECK(__builtin_offsetof(raSnapshot, rcLateStartFrames) == 0xC3);
+	CHECK(__builtin_offsetof(raSnapshot, defsMagic) == 0xC4);
 	CHECK(__builtin_offsetof(raSnapshot, rcStackUsed) == 0x6A);
 	CHECK(__builtin_offsetof(raSnapshot, rcStage) == 0x6C);
 	CHECK(__builtin_offsetof(raSnapshot, rcTriggered) == 0x70);
@@ -1222,86 +1229,9 @@ int main(void) {
 	    address translation lands on the right word, and whether the peek path refuses
 	    anything it should not.
 	*/
-	printf("\nthe frame throttle keeps the reader inside the blanking period\n");
-	{
-		/*
-		    The steady-state cost was measured at 28-31 scanlines for 45 definitions against 71 of
-		    blanking, and Chrono Trigger's larger set spilled past it -- tearing on the world map, and
-		    a dead ARM9 entering Leene Square where the game had no slack. This is the arithmetic that
-		    keeps the average inside whatever room was actually left.
-		*/
-		CHECK(ra_rc_frame_skip(30, 40) == 0);    /* fits, so every frame */
-		CHECK(ra_rc_frame_skip(40, 40) == 0);    /* exactly fits */
-		CHECK(ra_rc_frame_skip(41, 40) == 1);    /* just over: every other frame */
-		CHECK(ra_rc_frame_skip(80, 40) == 2);    /* twice the room: every third */
-		CHECK(ra_rc_frame_skip(200, 40) == RA_RC_FRAME_SKIP_MAX);   /* capped, not stalled */
-		/*
-		    A zero cost never throttles whatever the room says -- and this is the case the host runs
-		    in, since RA_VCOUNT never advances here. Get it wrong and the suite's own frame ticks stop
-		    evaluating, which is exactly how this was caught.
-		*/
-		CHECK(ra_rc_frame_skip(0, 0) == 0);
-		CHECK(ra_rc_frame_skip(0, 40) == 0);
-		/* Started outside blanking with real work done: over budget, and no denominator. */
-		CHECK(ra_rc_frame_skip(10, 0) == RA_RC_FRAME_SKIP_MAX);
-		/* The floor is well inside what the old VCOUNT hook shipped, which ran on 8% of frames. */
-		CHECK(RA_RC_FRAME_SKIP_MAX <= 11);
-
-		/*
-		    ...and the half the throttle above could not do, because hardware said so: skipping frames
-		    lowers the average and leaves the peak alone, so the frame that does run still overruns by
-		    exactly as much as it always did. Leene Square stopped freezing and the world map went on
-		    tearing, which is what a bounded reactive throttle looks like -- the same glitch, one frame
-		    in four instead of every frame.
-
-		    ra_rc_frame_fits() decides *before* the work whether there is room for it.
-		*/
-		CHECK(ra_rc_frame_fits(30, 40, 0) == 1);   /* room to spare */
-		CHECK(ra_rc_frame_fits(40, 40, 0) == 1);   /* exactly fits, so take it */
-		CHECK(ra_rc_frame_fits(41, 40, 0) == 0);   /* one scanline over is one scanline of tearing */
-		CHECK(ra_rc_frame_fits(200, 40, 0) == 0);
-		CHECK(ra_rc_frame_fits(10, 0, 0) == 0);    /* began outside blanking: no room at all */
-		/*
-		    A cost of zero always runs, for the same reason it never throttles above -- and again this
-		    is the case the host runs in. Both of this function's inputs are zero here forever, so
-		    getting it wrong stops the suite's own frame ticks silently.
-		*/
-		CHECK(ra_rc_frame_fits(0, 0, 0) == 1);
-		CHECK(ra_rc_frame_fits(0, 40, 0) == 1);
-		/*
-		    Starvation always runs. A game whose own handler leaves nothing behind would otherwise stop
-		    the reader for the whole session, and a reader that never evaluates is the worse bug.
-		*/
-		CHECK(ra_rc_frame_fits(200, 0, RA_RC_FRAME_STARVE_MAX) == 1);
-		CHECK(ra_rc_frame_fits(200, 0, RA_RC_FRAME_STARVE_MAX - 1) == 0);
-		CHECK(ra_rc_frame_fits(200, 0, 255) == 1);
-		/* And the forced run is rare enough to be worth forcing: 1 in 17 frames, near the 8% shipped. */
-		CHECK(RA_RC_FRAME_STARVE_MAX >= 8 && RA_RC_FRAME_STARVE_MAX <= 32);
-
-		/*
-		    ...and then hardware said neither of the two above can work on this set, with two numbers
-		    read off the snapshot on Chrono Trigger's world map: rcLinesMax 101, rcRoomMax 70.
-
-		    70 of a possible 71 means the game leaves the reader essentially the whole blanking period
-		    and the work still needs 40% more than the hardware has. There is no schedule for a job
-		    that exceeds the budget on its cheapest frame, so the set is divided instead.
-		*/
-		CHECK(ra_rc_frame_parts(1, 101, 70) == 2);   /* the measurement that forced this */
-		CHECK(ra_rc_frame_parts(2, 69, 70) == 2);    /* fits now: settle here */
-		CHECK(ra_rc_frame_parts(2, 71, 70) == 3);    /* one over is still over */
-		/* It only rises, so a piece that fits is never enlarged on a guess about the memref pass. */
-		CHECK(ra_rc_frame_parts(4, 10, 70) == 4);
-		CHECK(ra_rc_frame_parts(1, 10, 70) == 1);
-		/* Pinned at the ceiling is a reading, not a loop: no division of triggers fits, so stop. */
-		CHECK(ra_rc_frame_parts(RA_RC_PARTS_MAX, 200, 70) == RA_RC_PARTS_MAX);
-		/* Zero either side says nothing, which is the case the host lives in. */
-		CHECK(ra_rc_frame_parts(3, 0, 70) == 3);
-		CHECK(ra_rc_frame_parts(3, 200, 0) == 3);
-		/* A zero parts is 1, because ra_rc_do_frame_slice() treats it that way too. */
-		CHECK(ra_rc_frame_parts(0, 0, 0) == 1);
-		/* The floor on sample rate stays inside the 8% of frames the old VCOUNT hook shipped on. */
-		CHECK(RA_RC_PARTS_MAX <= 12);
-	}
+	printf("\nthe full-frame budget has a bounded unsupported threshold\n");
+	CHECK(RA_RC_OVERRUN_LIMIT == 30);
+	CHECK(RA_RC_UNSUPPORTED_BUDGET > RA_RC_FRAME);
 
 	printf("\nthe MPU report names the region and refuses the one holding the game's code\n");
 	{
@@ -2370,6 +2300,42 @@ int main(void) {
 	test_overlay_survey();
 
 	test_wifi_verdict();
+
+	printf("\nunsupported evaluation preserves diagnostics and reaches the menu\n");
+	{
+		raSessionBlock* const session =
+			(raSessionBlock*)CARDENGINEI_ARM9_RA_SESSION_LOCATION;
+		const u32 eventsBefore = eventCount;
+		const u32 triggeredBefore = triggeredCount;
+
+		session->magic = RA_SESSION_MAGIC;
+		frameState.cost = 262;
+		frameState.cost_max = 262;
+		frameState.room = 182;
+		frameState.room_max = 192;
+		frameState.overruns = RA_RC_OVERRUN_LIMIT;
+		frameState.unsupported = 1;
+		frameState.late_start_frames = 17;
+		frameState.other_transitions = 1;
+		ra_rc_tick(&snapshot);
+		CHECK(snapshot.rcStage == RA_RC_UNSUPPORTED_BUDGET);
+		CHECK(snapshot.rcOverruns == RA_RC_OVERRUN_LIMIT);
+		CHECK(snapshot.rcLateStartFrames == 17);
+		CHECK(snapshot.rcCostHigh == 1 && snapshot.rcLines == 6);
+		CHECK(((u16)snapshot.rcCostHigh << 8 | snapshot.rcLines) == 262);
+		CHECK(snapshot.rcLinesMax == 255);
+		CHECK(snapshot.rcRoom == 182 && snapshot.rcRoomMax == 192);
+		CHECK(snapshot.rcPeeks == 0);
+		CHECK(session->rcStage == RA_RC_UNSUPPORTED_BUDGET);
+		CHECK(eventCount == eventsBefore && triggeredCount == triggeredBefore);
+		*(vu16*)0x04000006 = RA_RC_VBLANK_FIRST_LINE;
+		ra_rc_tick(&snapshot);
+		CHECK(snapshot.rcStage == RA_RC_UNSUPPORTED_BUDGET);
+		CHECK(snapshot.rcRoom == 182 && frameState.cost == 262);
+		CHECK(snapshot.rcLateStartFrames == 17);
+		CHECK(snapshot.rcPeeks == 0);
+		CHECK(eventCount == eventsBefore && triggeredCount == triggeredBefore);
+	}
 
 	printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "PASSED",
 	       failures, failures == 1 ? "" : "s");

@@ -94,6 +94,9 @@ else
 	exit 1
 fi
 
+echo "portable cadence and launcher suite"
+bash tools/ra_host_test.sh
+
 echo "host suite"
 # The exit status, not a grep for a word.
 #

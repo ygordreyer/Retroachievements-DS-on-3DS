@@ -34,25 +34,6 @@ CC=${CC:-cc}
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
 
-mkdir -p "$out/include/nds"
-cat > "$out/include/nds/ndstypes.h" <<'EOF'
-/* Just enough of libnds' ndstypes.h for the reader to compile on the host. */
-#ifndef NDSTYPES_H
-#define NDSTYPES_H
-#include <stdint.h>
-#include <stdbool.h>
-typedef uint8_t  u8;
-typedef uint16_t u16;
-typedef uint32_t u32;
-typedef int8_t   s8;
-typedef int16_t  s16;
-typedef int32_t  s32;
-typedef volatile uint8_t  vu8;
-typedef volatile uint16_t vu16;
-typedef volatile uint32_t vu32;
-#endif
-EOF
-
 # rcheevos is compiled in rather than stubbed out, for the same reason cardengine.c is:
 # the expensive failures here are a definition that does not parse and an address that
 # translates wrongly, and both are pure logic that a host can check. Catching either one
@@ -83,7 +64,7 @@ rc_runtime_sources=$(ls "$RC"/src/rcheevos/*.c | grep -v 'rc_validate\.c$')
 #
 $CC -std=gnu99 -Wall -Wno-unused-function -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -O1 \
 	-DRA_LAUNCHER_WIFI=1 \
-	-I"$out/include" -Iretail/common/include -Iretail/cardenginei/arm9_ra/include \
+	-Itools/host-stubs -Iretail/common/include -Iretail/cardenginei/arm9_ra/include \
 	-I"$RC/include" -I"$RC/src" \
 	-no-pie -Wl,-Ttext-segment=0x02100000 \
 	-Wl,--defsym=__bss_start=0x03740000 \
@@ -94,6 +75,7 @@ $CC -std=gnu99 -Wall -Wno-unused-function -Wno-pointer-to-int-cast -Wno-int-to-p
 	"$RC"/src/rc_util.c "$RC"/src/rc_compat.c "$RC"/src/rc_version.c \
 	"$RC"/src/rhash/md5.c \
 	retail/arm9/source/ra_wifi_verdict.c \
+	retail/cardenginei/arm9_ra/source/ra_rc_frame.c \
 	retail/cardenginei/arm9_ra/source/ra_text.c \
 	retail/cardenginei/arm9_ra/source/ra_overlay.c \
 	-lm -lpthread -o "$out/ra_reader_test"
@@ -119,13 +101,13 @@ set -e
 #
 # sniprintf is newlib's integer-only printf, which this codebase uses throughout to keep float
 # formatting out of the link. glibc has no such symbol, so the host build maps it to snprintf --
-# the same kind of shim as the fabricated ndstypes.h above, and for the same reason: test the
+# the same kind of shim as tools/host-stubs/nds/ndstypes.h: test the
 # real source rather than a copy of it.
 #---------------------------------------------------------------------------------
 $CC -std=gnu99 -Wall -O1 \
 	-DRA_LAUNCHER_WIFI=1 -DRC_HASH_NO_DISC -DRC_HASH_NO_ENCRYPTED -DRC_HASH_NO_ZIP \
 	-Dsniprintf=snprintf \
-	-I"$out/include" -Iretail/common/include -Iretail/cardenginei/arm9_ra/include -I"$RC/include" -I"$RC/src" \
+	-Itools/host-stubs -Iretail/common/include -Iretail/cardenginei/arm9_ra/include -I"$RC/include" -I"$RC/src" \
 	tools/ra_launcher_test.c \
 	retail/arm9/source/ra_hash.c retail/arm9/source/ra_cfg.c \
 	retail/arm9/source/ra_screen.c \
@@ -168,7 +150,7 @@ fi
 
 $CC -std=gnu99 -Wall -O1 \
 	$bss_end_flag \
-	-I"$out/include" -Iretail/common/include -Iretail/cardenginei/arm9_ra/include -I"$RC/include" -I"$RC/src" \
+	-Itools/host-stubs -Iretail/common/include -Iretail/cardenginei/arm9_ra/include -I"$RC/include" -I"$RC/src" \
 	tools/ra_fit_test.c \
 	$rc_runtime_sources \
 	"$RC"/src/rc_util.c "$RC"/src/rc_compat.c "$RC"/src/rc_version.c \
@@ -232,7 +214,7 @@ echo
 echo "loadCrt0's two layouts agree, field by field"
 crt0_obj=retail/bootloaderi/build/load_crt0.o
 if [ -f "$crt0_obj" ] && command -v arm-none-eabi-nm >/dev/null 2>&1; then
-	$CC -std=gnu99 -Wall -O1 -I"$out/include" -Iretail/common/include -Iretail/cardenginei/arm9_ra/include \
+	$CC -std=gnu99 -Wall -O1 -Itools/host-stubs -Iretail/common/include -Iretail/cardenginei/arm9_ra/include \
 		tools/ra_crt0_offsets.c -o "$out/ra_crt0_offsets"
 	# A file rather than process substitution, and shell arithmetic rather than awk's
 	# strtonum(): this script is #!/bin/sh, and strtonum is a gawk extension that is

@@ -2357,6 +2357,7 @@ static void raWifiStageSession(int hardcore, u8 refusal, int overlay, u8 queue, 
 	block->refusal  = refusal;
 	block->overlay  = overlay ? 1 : 0;
 	block->queue    = queue;
+	block->rcStage  = RA_RC_NONE;
 	block->magic = RA_SESSION_MAGIC;
 
 	raWifiLog("in-game menu     RAM editing %s\n",

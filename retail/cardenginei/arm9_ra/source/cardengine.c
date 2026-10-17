@@ -184,9 +184,7 @@ u32 ra_read(u32 addr, u8 size) {
 */
 /*
     Which of the eight regions wins for `addr`, and what its base is, from the eight raw region
-    registers -- and it is a pure function taking them as an array for the reason ra_rc_frame_skip()
-    is one: the arithmetic is the part with the logic, the coprocessor read is the part a host does
-    not have, and tools/ra_reader_test.c drives this directly.
+    registers. Pure arithmetic, tested directly by tools/ra_reader_test.c.
 
     Region format on the ARM946: bits 31-12 the base, bits 5-1 the size as 2^(N+1), bit 0 the enable.
     Regions are priority-ordered with the highest number winning, so iterating upward and overwriting

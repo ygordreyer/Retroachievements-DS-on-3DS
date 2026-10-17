@@ -37,6 +37,9 @@ jobs:
           done
           gcc lzss.c -o /usr/local/bin/lzss
 
+      - name: Portable cadence and launcher tests
+        run: CC=gcc sh tools/ra_host_test.sh
+
       - name: Which toolchain this ran on
         run: /opt/devkitpro/devkitARM/bin/arm-none-eabi-gcc --version | head -1
 

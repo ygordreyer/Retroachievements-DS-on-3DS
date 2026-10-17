@@ -978,6 +978,8 @@ static void raSessionLine(int row) {
 		    boot anything, which is a different state from being told softcore.
 		*/
 		print(1, row, (unsigned char*)"No session this boot", FONT_DARKER_GRAY, false);
+	} else if (s->rcStage == RA_RC_UNSUPPORTED_BUDGET) {
+		print(1, row, (unsigned char*)"RA stopped: set exceeds budget", FONT_RED, false);
 	} else if (s->hardcore) {
 		print(1, row, (unsigned char*)"Hardcore -- RAM editing locked", FONT_LIME, false);
 	} else if (s->refusal == RA_REFUSED_CHEATS) {

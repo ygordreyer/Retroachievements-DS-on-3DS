@@ -446,6 +446,7 @@ typedef struct raSessionBlock {
 	    no FIFO request, no file read, no sector write -- one step earlier than the thing being tested.
 	*/
 	u8  queue;
+	u8  rcStage;   /* +0x08  evaluator status, written by ARM9 for the menu */
 } raSessionBlock;
 
 /*
@@ -795,8 +796,7 @@ typedef struct raConfig {
 /*
     Render `step` of `steps` as a bar and a percentage, into at least RA_BAR_MIN bytes.
 
-    Pure, and its own function, for the reason ra_rc_frame_skip() is one: it is the part with the
-    arithmetic and tools/ra_launcher_test.c drives it directly. Getting a percentage wrong on a
+    Pure arithmetic, tested directly by tools/ra_launcher_test.c. Getting a percentage wrong on a
     progress bar is the kind of bug that is invisible until someone counts.
 */
 #define RA_BAR_CELLS 22
