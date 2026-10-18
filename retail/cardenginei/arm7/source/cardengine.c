@@ -32,6 +32,10 @@
 /* Step 3b: RA_SHARED_UNLOCK_* -- the contract with the ARM9, in one place rather than two. */
 #include "ra.h"
 #include "ra_unlock.h"
+#pragma GCC push_options
+#pragma GCC optimize ("Os")
+#include "ra_badge.h"
+#pragma GCC pop_options
 #include "ra_wifi.h"   /* RA_QUEUE_RECORD, RA_QUEUE_MAX -- defined whether or not the WiFi switch is on */
 #include <nds/debug.h>
 
@@ -1185,6 +1189,26 @@ void saveScreenshot(void) {
 #ifdef TWLSDK
 	//if (doBak) restoreSdBakData();
 #endif
+}
+
+extern raBadgeDescriptor raBadgePack;
+static u32 readBadgeBytes(void* file, void* dst, u32 offset, u32 bytes) {
+    return fileRead((char*)dst, (aFile*)file, offset, bytes);
+}
+
+u32 __attribute__((optimize("Os"))) readBadge(u32 id, u32 destination) {
+    aFile file;
+    /* Only the menu's own swapped allocation can receive an ARM7 write. */
+    if ((destination & 31) || destination < INGAME_MENU_LOCATION + 0x1000
+        || destination > INGAME_MENU_LOCATION + 39 * 1024 - RA_BADGE_BYTES)
+        return RA_BADGE_INVALID;
+    if (raBadgePack.cluster < 2)
+        return RA_BADGE_NO_FILE;
+    /* getFileFromCluster initializes every field used by an uncached file. */
+    getFileFromCluster(&file, raBadgePack.cluster, false);
+    resetPrevSect(&file);
+    return raBadgeFetch(readBadgeBytes, &file, raBadgePack.count, id,
+        (u16*)destination, &sharedAddr[2]);
 }
 
 void prepareManual(void) {

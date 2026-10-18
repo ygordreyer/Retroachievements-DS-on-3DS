@@ -32,6 +32,7 @@
 #include "patch.h"
 #include "find.h"
 #include "hook.h"
+#include "locations.h"
 #include "tonccpy.h"
 #include "nocashMessage.h"
 
@@ -375,6 +376,13 @@ int hookNdsRetailArm7(
 	ce7->patchOffsetCacheFileCluster = patchOffsetCacheFileCluster;
 	ce7->srParamsCluster          = srParamsFileCluster;
 	ce7->raUnlocksCluster         = raUnlocksCluster;
+    toncset(&ce7->raBadgePack, 0, sizeof(ce7->raBadgePack));
+    if (dsiSD && *(u32*)CARDENGINEI_ARM9_RA_SESSION_BUFFERED_LOCATION == CARDENGINEI_ARM9_RA_SESSION_MAGIC) {
+        const raBadgeDescriptor* pack = (const raBadgeDescriptor*)
+            (CARDENGINEI_ARM9_RA_SESSION_BUFFERED_LOCATION + RA_BADGE_SESSION_OFFSET);
+        if (pack->magic == RA_BADGE_DESCRIPTOR_MAGIC)
+            ce7->raBadgePack = *pack;
+    }
 	/*
 	    cardengineArm7 is the second positional mirror in this project: card_engine_header.s declares
 	    the same fields as labels in order, the ARM7 cardengine reads them as externs, and nothing in
@@ -395,7 +403,8 @@ int hookNdsRetailArm7(
 		typedef char raCe7OffsetsPinned[
 			(__builtin_offsetof(cardengineArm7, srParamsCluster)   == 0x34
 			 && __builtin_offsetof(cardengineArm7, romMap)           == 0x8C
-			 && __builtin_offsetof(cardengineArm7, raUnlocksCluster) == 0xEC) ? 1 : -1];
+			 && __builtin_offsetof(cardengineArm7, raUnlocksCluster) == 0xEC
+             && __builtin_offsetof(cardengineArm7, raBadgePack) == 0xF0) ? 1 : -1];
 		(void)sizeof(raCe7OffsetsPinned);
 	}
 	ce7->ramDumpCluster           = ramDumpCluster;

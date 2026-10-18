@@ -3,6 +3,7 @@
 
 #include <nds/ndstypes.h>
 #include "module_params.h"
+#include "ra_badge.h"
 
 //
 // ARM7 cardengine patches of ARM7 functions
@@ -141,6 +142,7 @@ typedef struct cardengineArm7 {
 	    it. Zero means no queue file, and the consumer treats that as "do nothing".
 	*/
 	u32 raUnlocksCluster;
+    raBadgeDescriptor raBadgePack;
 } cardengineArm7;
 
 //

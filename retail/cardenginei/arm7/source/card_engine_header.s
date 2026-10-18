@@ -24,6 +24,7 @@
 .global patchOffsetCacheFileCluster
 .global srParamsCluster
 .global raUnlocksCluster
+.global raBadgePack
 .global ramDumpCluster
 .global screenshotCluster
 .global pageFileCluster
@@ -174,9 +175,8 @@ romMap:
 	.word	0x00000000
 	.word	0x00000000
 @---------------------------------------------------------------------------------
-@ Step 3b. Last field of cardengineArm7, and it has to stay last: the C struct in
-@ cardengine_header_arm7.h is read positionally through these labels, exactly like
-@ loadCrt0 is by load_crt0.s, and nothing in either language checks the other.
+@ New handoff fields append here to preserve existing C and assembly offsets.
+@ cardengine_header_arm7.h is read positionally through these labels.
 @
 @ `.align 2` -- four bytes. In GNU as for ARM the argument is a power of two, so
 @ the `.align 4` further down means sixteen. Writing 4 here is the mistake that put
@@ -185,6 +185,8 @@ romMap:
 	.align	2
 raUnlocksCluster:
 	.word	0x00000000
+raBadgePack:
+	.space 16
 .align	4
 
 @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@

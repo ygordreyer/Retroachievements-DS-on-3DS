@@ -9,6 +9,7 @@
 
 #include "igm_text.h"
 #include "locations.h"
+#include "ra_badge.h"
 #include "cardengine.h"
 #include "fpsAdjust.h"
 #include "nds_header.h"
@@ -34,6 +35,7 @@ extern void returnToLoader(bool reboot);
 extern void prepareScreenshot(void);
 extern void saveScreenshot(void);
 extern void prepareManual(void);
+extern u32 readBadge(u32 id, u32 destination);
 extern void readManual(int line);
 extern void restorePreManual(void);
 extern void saveMainScreenSetting(void);
@@ -190,6 +192,9 @@ void inGameMenu(void) {
 				case 0x544F4853: // SHOT
 					saveScreenshot();
 					break;
+				case RA_BADGE_COMMAND:
+                    sharedAddr[0] = readBadge(sharedAddr[0], sharedAddr[1]);
+                    break;
 				case 0x4E414D50: // PMAN
 					prepareManual();
 					break;

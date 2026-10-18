@@ -36,6 +36,7 @@
 #include "ra_login.h"
 #include "ra_queue_io.h"
 #include "ra_unlock.h"
+#include "ra_badge.h"
 #include <errno.h>
 
 #if RA_LAUNCHER_WIFI
@@ -2105,6 +2106,33 @@ static bool raWifiCacheLoad(bool sdFound) {
 	return ok;
 }
 
+static u32 raWifiReadBadgeBytes(void* file, void* dst, u32 offset, u32 bytes) {
+    if (fseek((FILE*)file, offset, SEEK_SET)) return 0;
+    return fread(dst, 1, bytes, (FILE*)file);
+}
+
+static void raWifiStageBadges(bool sdFound) {
+    raBadgeDescriptor* const pack = (raBadgeDescriptor*)
+        (CARDENGINEI_ARM9_RA_SESSION_BUFFERED_LOCATION + RA_BADGE_SESSION_OFFSET);
+    char path[80];
+    struct stat st;
+    memset(pack, 0, sizeof(*pack));
+    if (!sdFound || !verdict.gameId) return;
+    sniprintf(path, sizeof(path), "sd:/_nds/nds-bootstrap/ra/badges/%lu.rab",
+              (unsigned long)verdict.gameId);
+    if (stat(path, &st) || st.st_ino < 2 || st.st_size < 64
+        || st.st_size > 64 + 4096 * (32 + RA_BADGE_BYTES)) return;
+    FILE* file = fopen(path, "rb");
+    raBadgeIndex index;
+    if (!file) return;
+    raBadgeStatus status = raBadgeValidate(&index, raWifiReadBadgeBytes, file, verdict.gameId, st.st_size);
+    if (fclose(file) || status != RA_BADGE_OK) return;
+    pack->game = verdict.gameId;
+    pack->cluster = st.st_ino;
+    pack->count = index.count;
+    pack->magic = RA_BADGE_DESCRIPTOR_MAGIC;
+}
+
 static void raWifiDumpDefinitions(bool sdFound) {
 	const char* const path = sdFound ? RA_DEFS_DUMP_PATH : RA_DEFS_DUMP_PATH_FAT;
 	const char* const text = (const char*)(CARDENGINEI_ARM9_RA_DEFS_BUFFERED_LOCATION
@@ -2605,6 +2633,8 @@ done:
 	if (!verdict.patched && raWifiCacheLoad(sdFound)) {
 		verdict.defsBytes = *(u32*)(CARDENGINEI_ARM9_RA_DEFS_BUFFERED_LOCATION + 4);
 	}
+
+    raWifiStageBadges(sdFound);
 
 	/*
 	    Give the tail a chance before the summary rather than after it. dsiwifi narrates

@@ -14,6 +14,7 @@
 #include "ra_diagnostics.h"
 #include "ra_unlock.h"
 #include "ra_progress_ui.h"
+#include "ra_badge.h"
 #ifndef B4DS
 #include "ra_unlock_export.h"
 #endif
@@ -34,7 +35,7 @@ void DC_FlushRange(const void *base, u32 size);
 	#define MAX_BRIGHTNESS 4
 #endif
 
-static u8 bgBak[sizeof(igmText.font) * 4];
+static u8 bgBak[RA_BADGE_BACKUP_BYTES];
 static u16 bgMapBak[0x300];
 static u16 palBak[256];
 
@@ -715,6 +716,34 @@ static void raPendingPage(void) {
 	waitKeys(KEY_B);
 }
 
+static u16 raBadgeImage[RA_BADGE_BYTES / 2] __attribute__((aligned(32)));
+static u32 raBadgeId;
+
+static void raMenuBadge(u32 id, bool earned, int x, int y) {
+    if (raBadgeId != id) {
+        u32 status = RA_BADGE_NO_FILE;
+#ifndef B4DS
+        DC_FlushRange(raBadgeImage, sizeof(raBadgeImage));
+        sharedAddr[0] = id;
+        sharedAddr[1] = (u32)raBadgeImage;
+        sharedAddr[4] = RA_BADGE_COMMAND;
+        while (sharedAddr[4] == RA_BADGE_COMMAND) swiDelay(100);
+        status = sharedAddr[0];
+        DC_InvalidateRange(raBadgeImage, sizeof(raBadgeImage));
+        if (status == RA_BADGE_OK) status = raBadgeCheckImage(raBadgeImage, sharedAddr[2]);
+#endif
+        if (status != RA_BADGE_OK) raBadgePlaceholder(raBadgeImage);
+        raBadgeId = id;
+    }
+    tonccpy((u8*)BG_GFX_SUB + RA_BADGE_TILE_OFFSET, raBadgeImage + 16, RA_BADGE_TILE_BYTES);
+    for (unsigned i = 0; i < 16; ++i)
+        BG_PALETTE_SUB[RA_BADGE_PALETTE_BANK * 16 + i] =
+            earned ? raBadgeImage[i] : raBadgeGray(raBadgeImage[i]);
+    for (unsigned row = 0; row < 4; ++row)
+        for (unsigned col = 0; col < 4; ++col)
+            BG_MAP_RAM_SUB(15)[(y + row) * 32 + x + col] = raBadgeMap(col, row);
+}
+
 static bool raProgressAllowed;
 
 static void raMenuProgress(u32 id, raProgress* progress) {
@@ -737,6 +766,10 @@ static void raPrintClipped(int x, int y, const char* text, unsigned width, FontP
 
 static void raDrawProgress(int y, const raProgress* progress, unsigned width) {
     char row[33];
+    raProgressFormat(row, progress);
+    unsigned length = 0;
+    while (row[length]) ++length;
+    while (width > 1 && width + length > 22) --width;
     if (progress->flags & RA_PROGRESS_MEASURED) {
         raProgressBar(row, progress, width);
         print(3, y, (const unsigned char*)row, FONT_LIGHT_BLUE, false);
@@ -760,6 +793,7 @@ static void raAchievementsPage(void) {
 	const raViewerBlock* const v = (const raViewerBlock*)CARDENGINEI_ARM9_RA_VIEWER_LOCATION;
 	const char* const          text = (const char*)(CARDENGINEI_ARM9_RA_DEFS_LOCATION
 	                                                + CARDENGINEI_ARM9_RA_DEFS_HEADER);
+    raBadgeId = 0;
 	/* Nine two-line entries fit above the control hint. */
 	const int rows = 9;
 	int       top = 0;
@@ -811,14 +845,18 @@ static void raAchievementsPage(void) {
             raProgress progress;
             print(1, y, (unsigned char*)(earned ? "*" : "-"),
                   earned ? FONT_LIME : FONT_DARKER_GRAY, false);
-            if (e->titleOff) raPrintClipped(3, y, text + e->titleOff, 23, earned ? FONT_LIGHT_GRAY : FONT_WHITE);
+            if (e->titleOff) raPrintClipped(3, y, text + e->titleOff, 18, earned ? FONT_LIGHT_GRAY : FONT_WHITE);
             if (e->pointsOff) {
                 char points[6];
                 raProgressClip(points, text + e->pointsOff, 5);
-                printRight(31, y, (unsigned char*)points, FONT_LIGHT_BLUE, false);
+                printRight(26, y, (unsigned char*)points, FONT_LIGHT_BLUE, false);
             }
             raMenuProgress(e->id, &progress);
             raDrawProgress(y + 1, &progress, 5);
+        }
+        {
+            const raViewerEntry* e = &v->entry[top + cursor];
+            raMenuBadge(e->id, (e->flags & (RA_VIEWER_EARNED | RA_VIEWER_QUEUED | RA_VIEWER_SESSION)) != 0, 28, 3 + 2 * cursor);
         }
         drawCursor((u8)(3 + 2 * cursor));
         print(1, 23, (unsigned char*)"A: Details B: Back  </>: Page", FONT_WHITE, false);
@@ -968,6 +1006,7 @@ static void raAchievementsPage(void) {
 					}
 				}
 			}
+            raMenuBadge(e->id, (e->flags & (RA_VIEWER_EARNED | RA_VIEWER_QUEUED | RA_VIEWER_SESSION)) != 0, 27, 19);
 			print(1, 23, igmText.bNo, FONT_WHITE, false);
 			waitKeys(KEY_B);
 		}
@@ -1594,7 +1633,7 @@ u32 inGameMenu(s32 *mainScreen, u32 consoleModel, s32 *exceptionRegisters) {
 		BG_PALETTE_SUB[i * 0x10 + 1] = igmPal[i];
 	}
 
-	tonccpy(bgBak, BG_GFX_SUB, sizeof(igmText.font) * 4);	// Backup the original graphics
+	tonccpy(bgBak, BG_GFX_SUB, sizeof(bgBak));	// Backup the original graphics
 	for(int i = 0; i < sizeof(igmText.font); i++) {	// Load font from 1bpp to 4bpp
 		u8 val = igmText.font[i];
 		BG_GFX_SUB[i * 2]     = (val & 1) | ((val & 2) << 3) | ((val & 4) << 6) | ((val & 8) << 9);
@@ -1759,7 +1798,7 @@ u32 inGameMenu(s32 *mainScreen, u32 consoleModel, s32 *exceptionRegisters) {
 
 	tonccpy(BG_MAP_RAM_SUB(15), bgMapBak, sizeof(bgMapBak));	// Restore BG_MAP_RAM
 	tonccpy(BG_PALETTE_SUB, palBak, sizeof(palBak));	// Restore the palette
-	tonccpy(BG_GFX_SUB, bgBak, sizeof(igmText.font) * 4);	// Restore the original graphics
+	tonccpy(BG_GFX_SUB, bgBak, sizeof(bgBak));	// Restore the original graphics
 
 	*(vu16*)0x0400106C = masterBright;
 
