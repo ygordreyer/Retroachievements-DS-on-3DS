@@ -883,11 +883,11 @@ static void raAchievementsPage(void) {
                 if (e->flags & RA_VIEWER_UNSAVED) status = "Queue full: not saved";
                 else if (session->magic == RA_SESSION_MAGIC && !session->queue) status = "Queue disabled";
                 else if (diag->magic == RA_UNLOCK_DIAGNOSTICS_MAGIC && diag->append_status == RA_UNLOCK_WRITE_FAILED)
-                    status = "Write failed: pending";
+                    status = "Last SD write failed";
                 else if (diag->magic == RA_UNLOCK_DIAGNOSTICS_MAGIC && diag->append_status == RA_UNLOCK_FULL)
-                    status = "SD queue full; pending";
+                    status = "Last SD write: queue full";
                 else if (diag->magic == RA_UNLOCK_DIAGNOSTICS_MAGIC && diag->append_status == RA_UNLOCK_NO_FILE)
-                    status = "SD file missing; pending";
+                    status = "Last SD write: no file";
                 print(1, 17, (unsigned char*)((e->flags & RA_VIEWER_SESSION) ? "Earned this session" : "Earned (sync pending)"), FONT_LIME, false);
                 print(1, 18, (const unsigned char*)status, FONT_RED, false);
             }
