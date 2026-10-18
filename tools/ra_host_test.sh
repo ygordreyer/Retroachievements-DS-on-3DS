@@ -5,6 +5,7 @@ CC=${CC:-cc}
 RA_HOST_OUT=$(mktemp -d "${TMPDIR:-/tmp}/ra-host.XXXXXX")
 trap 'rm -rf "$RA_HOST_OUT"' EXIT HUP INT TERM
 RC=retail/cardenginei/arm9_ra/rcheevos
+bash tools/ra_progress_test.sh
 if [ ! -f "$RC/include/rc_runtime.h" ]; then
     echo "$RC is empty; initialize the pinned submodule" >&2
     exit 2

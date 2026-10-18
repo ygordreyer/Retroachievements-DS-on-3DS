@@ -42,6 +42,37 @@
 #include <string.h>
 #include <stdlib.h>
 #include <malloc.h>
+#ifdef __APPLE__
+#include <malloc/malloc.h>
+/* Count 8-byte payload alignment, as ra_alloc.c does, rather than macOS size classes.
+ * The private host header is excluded from the measurement; DS headers are added below. */
+typedef struct { size_t requested; size_t pad; } raHostAllocation;
+static void* raHostMalloc(size_t n) {
+    raHostAllocation* h = malloc_zone_malloc(malloc_default_zone(), sizeof(*h) + n);
+    if (!h) return NULL;
+    h->requested = (n + 7) & ~(size_t)7;
+    return h + 1;
+}
+static void* raHostRealloc(void* p, size_t n) {
+    if (!p) return raHostMalloc(n);
+    raHostAllocation* h = malloc_zone_realloc(malloc_default_zone(), (raHostAllocation*)p - 1, sizeof(*h) + n);
+    if (!h) return NULL;
+    h->requested = (n + 7) & ~(size_t)7;
+    return h + 1;
+}
+static void raHostFree(void* p) {
+    if (p) malloc_zone_free(malloc_default_zone(), (raHostAllocation*)p - 1);
+}
+#define raFitAllocationSize(p) (((raHostAllocation*)(p) - 1)->requested)
+#define __libc_malloc(n) raHostMalloc(n)
+#define __libc_realloc(p, n) raHostRealloc(p, n)
+#define __libc_free(p) raHostFree(p)
+#else
+#define raFitAllocationSize(p) malloc_usable_size(p)
+extern void* __libc_malloc(size_t n);
+extern void* __libc_realloc(void* p, size_t n);
+extern void  __libc_free(void* p);
+#endif
 
 #include "rc_runtime.h"
 #include "rc_error.h"
@@ -91,10 +122,6 @@
     question about whether something fits.
     ------------------------------------------------------------------------------------
 */
-extern void* __libc_malloc(size_t n);
-extern void* __libc_realloc(void* p, size_t n);
-extern void  __libc_free(void* p);
-
 static int  counting;
 static long live, peak, blocks, peakBlocks;
 
@@ -102,7 +129,7 @@ void* malloc(size_t n) {
 	void* p = __libc_malloc(n);
 
 	if (counting && p) {
-		live += (long)malloc_usable_size(p);
+		live += (long)raFitAllocationSize(p);
 		blocks++;
 		if (live > peak) {
 			peak = live;
@@ -115,11 +142,11 @@ void* malloc(size_t n) {
 }
 
 void* realloc(void* old, size_t n) {
-	const long was = (counting && old) ? (long)malloc_usable_size(old) : 0;
+	const long was = (counting && old) ? (long)raFitAllocationSize(old) : 0;
 	void*      p   = __libc_realloc(old, n);
 
 	if (counting && p) {
-		live += (long)malloc_usable_size(p) - was;
+		live += (long)raFitAllocationSize(p) - was;
 		if (!old) {
 			blocks++;
 		}
@@ -132,7 +159,7 @@ void* realloc(void* old, size_t n) {
 
 void free(void* p) {
 	if (counting && p) {
-		live -= (long)malloc_usable_size(p);
+		live -= (long)raFitAllocationSize(p);
 		blocks--;
 	}
 	__libc_free(p);

@@ -34,6 +34,12 @@ CC=${CC:-cc}
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
 
+reader_link_flags='-no-pie -Wl,-Ttext-segment=0x02100000 -Wl,--defsym=__bss_start=0x03740000 -Wl,--defsym=__bss_end=0x03744000 -Wl,--defsym=__vram_top=0x03780000'
+if [ "$(uname -s)" = Darwin ]; then
+    # x86_64 permits DS-address mappings below 4 GiB. Apple Silicon runs this via Rosetta.
+    reader_link_flags='-arch x86_64 -Wl,-no_pie -Wl,-image_base,0x02100000 -Wl,-pagezero_size,0x1000'
+fi
+
 # rcheevos is compiled in rather than stubbed out, for the same reason cardengine.c is:
 # the expensive failures here are a definition that does not parse and an address that
 # translates wrongly, and both are pure logic that a host can check. Catching either one
@@ -66,10 +72,7 @@ $CC -std=gnu99 -Wall -Wno-unused-function -Wno-pointer-to-int-cast -Wno-int-to-p
 	-DRA_LAUNCHER_WIFI=1 \
 	-Itools/host-stubs -Iretail/common/include -Iretail/cardenginei/arm9_ra/include \
 	-I"$RC/include" -I"$RC/src" \
-	-no-pie -Wl,-Ttext-segment=0x02100000 \
-	-Wl,--defsym=__bss_start=0x03740000 \
-	-Wl,--defsym=__bss_end=0x03744000 \
-	-Wl,--defsym=__vram_top=0x03780000 \
+	$reader_link_flags \
 	tools/ra_reader_test.c \
 	$rc_runtime_sources \
 	"$RC"/src/rc_util.c "$RC"/src/rc_compat.c "$RC"/src/rc_version.c \

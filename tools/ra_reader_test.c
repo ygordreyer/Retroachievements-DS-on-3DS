@@ -26,11 +26,25 @@
 
 #define _GNU_SOURCE
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
 #include <sys/mman.h>
 
-#ifndef __linux__
+#if defined(__APPLE__)
+/* Mach-O absolute symbols preserve the same fixed WRAM arena as GNU --defsym. */
+__asm__(".globl ___bss_start\n___bss_start = 0x03740000\n"
+        ".globl ___bss_end\n___bss_end = 0x03744000\n"
+        ".globl ___vram_top\n___vram_top = 0x03780000\n");
+static int memfd_create(const char* name, unsigned int flags) {
+    char path[] = "/tmp/ra-reader-mirror.XXXXXX";
+    int fd;
+    (void)name; (void)flags;
+    fd = mkstemp(path);
+    if (fd >= 0) unlink(path);
+    return fd;
+}
+#elif !defined(__linux__)
 /* Syntax checks on other hosts still require the Linux-only runtime declaration. */
 extern int memfd_create(const char* name, unsigned int flags);
 #endif
@@ -810,6 +824,7 @@ int main(void) {
 			perror("mmap main RAM mirror");
 			return 2;
 		}
+		close(fd);
 	}
 
 	/*

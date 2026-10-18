@@ -244,6 +244,9 @@
     survives the card being lost; QUEUED is this console's word for it and does not.
 */
 #define RA_VIEWER_QUEUED       0x02
+/* Volatile session UI state. Never serialized to the unlock queue. */
+#define RA_VIEWER_SESSION      0x04
+#define RA_VIEWER_UNSAVED      0x08
 
 /*
     When an achievement was earned, packed into 27 bits of a u32, and 0 means "not known".

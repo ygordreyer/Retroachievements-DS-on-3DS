@@ -13,6 +13,7 @@
 #include "ra_wifi.h"   /* raPendingBlock -- the tally the launcher staged */
 #include "ra_diagnostics.h"
 #include "ra_unlock.h"
+#include "ra_progress_ui.h"
 #ifndef B4DS
 #include "ra_unlock_export.h"
 #endif
@@ -714,6 +715,37 @@ static void raPendingPage(void) {
 	waitKeys(KEY_B);
 }
 
+static bool raProgressAllowed;
+
+static void raMenuProgress(u32 id, raProgress* progress) {
+    progress->id = id;
+    progress->value = progress->target = 0;
+    progress->flags = RA_PROGRESS_MISSING;
+#ifndef B4DS
+    if (raProgressAllowed && raProgressSupported((const volatile uint32_t*)CARDENGINEI_ARM9_RA_LOCATION)) {
+        raProgressQuery query = (raProgressQuery)(CARDENGINEI_ARM9_RA_LOCATION + RA_PROGRESS_ENTRY_OFFSET);
+        query(id, progress);
+    }
+#endif
+}
+
+static void raPrintClipped(int x, int y, const char* text, unsigned width, FontPalette color) {
+    char row[33];
+    raProgressClip(row, text, width);
+    print(x, y, (const unsigned char*)row, color, false);
+}
+
+static void raDrawProgress(int y, const raProgress* progress, unsigned width) {
+    char row[33];
+    if (progress->flags & RA_PROGRESS_MEASURED) {
+        raProgressBar(row, progress, width);
+        print(3, y, (const unsigned char*)row, FONT_LIGHT_BLUE, false);
+    }
+    raProgressFormat(row, progress);
+    print((progress->flags & RA_PROGRESS_MEASURED) ? 6 + width : 3, y,
+          (const unsigned char*)row, FONT_LIGHT_GRAY, false);
+}
+
 /*
     RetroAchievements: this game's set, earned and still to earn.
 
@@ -722,20 +754,18 @@ static void raPendingPage(void) {
     to the definitions text, which is the one address both binaries can name.
 
     Two levels, because 32 columns cannot hold a title, its points and its description at once. The
-    list gives one line each -- a mark, the title, the points -- and A opens the description of the
-    line under the cursor. That split is also what keeps the page useful on a large set: forty
-    achievements are eight screens of one line and forty screens of three.
+    list uses two lines per entry: title and points, then live measured progress. A opens details.
 */
 static void raAchievementsPage(void) {
 	const raViewerBlock* const v = (const raViewerBlock*)CARDENGINEI_ARM9_RA_VIEWER_LOCATION;
 	const char* const          text = (const char*)(CARDENGINEI_ARM9_RA_DEFS_LOCATION
 	                                                + CARDENGINEI_ARM9_RA_DEFS_HEADER);
-	/* Rows 3 to 21 hold the list, so nineteen entries a screen. */
-	const int rows = 19;
+	/* Nine two-line entries fit above the control hint. */
+	const int rows = 9;
 	int       top = 0;
 	int       cursor = 0;
 
-	if (v->magic != RA_VIEWER_MAGIC || v->count == 0) {
+	if (v->magic != RA_VIEWER_MAGIC || v->count == 0 || v->count > RA_VIEWER_MAX_ENTRIES) {
 		clearScreen(false);
 		print(1, 0, igmText.raMenu[RA_MENU_ACHIEVEMENTS], FONT_WHITE, false);
 		/*
@@ -762,95 +792,36 @@ static void raAchievementsPage(void) {
 		    and `02 of 45` as `2 of 45`. Nothing on this page may start at column 0.
 		*/
 		print(1, 0, igmText.raMenu[RA_MENU_ACHIEVEMENTS], FONT_WHITE, false);
-		/*
-		    Three cells each, because RA_VIEWER_MAX_ENTRIES is 128 and two cells silently showed the
-		    low two digits of anything larger -- see raPrintNum().
-		*/
-		/*
-		    **The count is earned plus queued**, and that is the fix for a line that read
-		    `0 of 54 earned  2 sync` after unlocking two achievements. Zero is not what a player who
-		    just earned two of them should be looking at.
+        {
+            unsigned done = 0;
+            for (i = 0; i < v->count && i < RA_VIEWER_MAX_ENTRIES; ++i)
+                if (v->entry[i].flags & (RA_VIEWER_EARNED | RA_VIEWER_QUEUED | RA_VIEWER_SESSION)) ++done;
+            raPrintNum(1, 1, 3, done, FONT_LIME);
+            print(4, 1, (unsigned char*)"/", FONT_LIGHT_GRAY, false);
+            raPrintNum(5, 1, 3, v->count, FONT_WHITE);
+            print(9, 1, (unsigned char*)"earned", FONT_LIGHT_GRAY, false);
+            raPrintNum(27, 1, 3, raProgressPercent(done, v->count), FONT_LIGHT_BLUE);
+            print(30, 1, (unsigned char*)"%", FONT_LIGHT_BLUE, false);
+        }
 
-		    An achievement that has fired but not been sent **is earned**. It is the same thing the
-		    list under this line marks with a star, and it is what the percentage at the right-hand
-		    end has always counted -- so the big number was the one field on this page disagreeing
-		    with every other. What `sync` reports is not a different kind of achievement, it is the
-		    server's acknowledgement still being owed.
-
-		    Safe to add because the two are **disjoint by construction**, not by luck: ra_viewer_add()
-		    only sets RA_VIEWER_QUEUED on an entry that does not already carry RA_VIEWER_EARNED, so
-		    an unlock is in exactly one of the two counts and crosses over on the boot that submits
-		    it. Widened to u32 for the same reason the percentage is: the counts come from a block
-		    another binary wrote.
-		*/
-		raPrintNum(1, 1, 3, (u32)v->earned + (u32)v->queued, FONT_LIME);
-		print(5, 1, (unsigned char*)"of", FONT_LIGHT_GRAY, false);
-		raPrintNum(8, 1, 3, v->count, FONT_WHITE);
-		print(12, 1, (unsigned char*)"earned", FONT_LIGHT_GRAY, false);
-		if (v->queued) {
-			raPrintNum(19, 1, 3, v->queued, FONT_RED);
-			print(23, 1, (unsigned char*)"sync", FONT_LIGHT_GRAY, false);
-		}
-		/*
-		    How far through the set this account is, at the right-hand end of the same line.
-
-		    **Queued counts.** An achievement that has fired but not been sent is earned -- it is the
-		    same thing the list marks with a star -- and a percentage that ignored it would fall
-		    behind the stars on the page under it. The two counts are disjoint in practice: QUEUED is
-		    this console's word for an unlock, EARNED is the server's answer, and an unlock crosses
-		    from one to the other on the boot that submits it.
-
-		    Clamped at 100 rather than trusted: the counts come from a block another binary wrote.
-		*/
-		{
-			const u32 done    = (u32)v->earned + (u32)v->queued;   /* the same sum as the count above */
-			u32       percent = v->count ? (done * 100) / v->count : 0;
-
-			if (percent > 100) {
-				percent = 100;
-			}
-			raPrintNum(28, 1, 3, percent, FONT_LIGHT_BLUE);
-			print(31, 1, (unsigned char*)"%", FONT_LIGHT_BLUE, false);
-		}
-
-		for (i = 0; i < rows && top + i < v->count; i++) {
-			const raViewerEntry* const e = &v->entry[top + i];
-			const int                  earned = (e->flags & RA_VIEWER_EARNED) != 0;
-			const int                  queued = (e->flags & RA_VIEWER_QUEUED) != 0;
-
-			/*
-			    A mark rather than a colour alone: the two palettes are close enough on a lit DS
-			    screen that a photograph of this page could not settle which row was which, and this
-			    project reads a lot of photographs.
-
-			    Column 0 is not available for it. drawCursor() writes the caret there and *clears
-			    that column on every row* to erase the previous one, so a mark at 0 would survive
-			    exactly until the cursor moved.
-			*/
-			/*
-			    Three states, and the middle one is the one a player actually wants: earned on the
-			    server, earned and still in the queue, not earned. Queued keeps the star because it
-			    *is* earned -- what it is missing is the server's acknowledgement, and red says that
-			    without pretending it did not happen.
-			*/
-			print(1, 3 + i, (unsigned char*)((earned || queued) ? "*" : "-"),
-			      earned ? FONT_LIME : (queued ? FONT_RED : FONT_DARKER_GRAY), false);
-			if (e->titleOff) {
-				print(3, 3 + i, (unsigned char*)(text + e->titleOff),
-				      earned ? FONT_LIGHT_GRAY : FONT_WHITE, false);
-			}
-			if (e->pointsOff) {
-				printRight(31, 3 + i, (unsigned char*)(text + e->pointsOff),
-				           FONT_LIGHT_BLUE, false);
-			}
-		}
-		drawCursor((u8)(3 + cursor));
-		/*
-		    One line rather than two, because the row it used to take is a row of the list -- and on
-		    a 24-row screen with forty-five achievements to show, a row is worth more than a second
-		    hint. Left and right page through, which is the only way a set this size is walkable.
-		*/
-		print(1, 23, (unsigned char*)"A: OK / B: Back", FONT_WHITE, false);
+        for (i = 0; i < rows && top + i < v->count && top + i < RA_VIEWER_MAX_ENTRIES; i++) {
+            const raViewerEntry* const e = &v->entry[top + i];
+            const int earned = (e->flags & (RA_VIEWER_EARNED | RA_VIEWER_QUEUED | RA_VIEWER_SESSION)) != 0;
+            const int y = 3 + 2 * i;
+            raProgress progress;
+            print(1, y, (unsigned char*)(earned ? "*" : "-"),
+                  earned ? FONT_LIME : FONT_DARKER_GRAY, false);
+            if (e->titleOff) raPrintClipped(3, y, text + e->titleOff, 23, earned ? FONT_LIGHT_GRAY : FONT_WHITE);
+            if (e->pointsOff) {
+                char points[6];
+                raProgressClip(points, text + e->pointsOff, 5);
+                printRight(31, y, (unsigned char*)points, FONT_LIGHT_BLUE, false);
+            }
+            raMenuProgress(e->id, &progress);
+            raDrawProgress(y + 1, &progress, 5);
+        }
+        drawCursor((u8)(3 + 2 * cursor));
+        print(1, 23, (unsigned char*)"A: Details B: Back  </>: Page", FONT_WHITE, false);
 
 		waitKeys(KEY_A | KEY_B | KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
 		if (KEYS & KEY_B) {
@@ -897,23 +868,41 @@ static void raAchievementsPage(void) {
 
 			clearScreen(false);
 			if (e->titleOff) {
-				print(1, 0, (unsigned char*)(text + e->titleOff), FONT_WHITE, false);
+				raPrintClipped(1, 0, text + e->titleOff, 30, FONT_WHITE);
 			}
 			if (e->pointsOff) {
-				print(1, 2, (unsigned char*)(text + e->pointsOff), FONT_LIGHT_BLUE, false);
+				raPrintClipped(1, 2, text + e->pointsOff, 4, FONT_LIGHT_BLUE);
 				print(6, 2, (unsigned char*)"points", FONT_LIGHT_GRAY, false);
 			}
-			/*
-			    The same three states as the list, in the same place, so moving between the two
-			    pages does not move the fact. `(sync pending)` rather than a second word for earned:
-			    it is the *sending* that is outstanding, and saying so is what stops a player
-			    wondering whether the achievement itself is in doubt.
-			*/
-			if (e->flags & RA_VIEWER_EARNED) {
-				printRight(31, 2, (unsigned char*)"earned", FONT_LIME, false);
-			} else if (e->flags & RA_VIEWER_QUEUED) {
-				printRight(31, 2, (unsigned char*)"(sync pending)", FONT_RED, false);
-			}
+            if (e->flags & RA_VIEWER_EARNED) {
+                printRight(31, 2, (unsigned char*)"Earned", FONT_LIME, false);
+            } else if (e->flags & (RA_VIEWER_QUEUED | RA_VIEWER_SESSION)) {
+                const raSessionBlock* const session = (const raSessionBlock*)CARDENGINEI_ARM9_RA_SESSION_LOCATION;
+                const raUnlockDiagnostics* const diag = (const raUnlockDiagnostics*)CARDENGINEI_ARM9_RA_UNLOCK_LOCATION;
+                const char* status = "Sync pending";
+                if (e->flags & RA_VIEWER_UNSAVED) status = "Queue full: not saved";
+                else if (session->magic == RA_SESSION_MAGIC && !session->queue) status = "Queue disabled";
+                else if (diag->magic == RA_UNLOCK_DIAGNOSTICS_MAGIC && diag->append_status == RA_UNLOCK_WRITE_FAILED)
+                    status = "Write failed: pending";
+                else if (diag->magic == RA_UNLOCK_DIAGNOSTICS_MAGIC && diag->append_status == RA_UNLOCK_FULL)
+                    status = "SD queue full; pending";
+                else if (diag->magic == RA_UNLOCK_DIAGNOSTICS_MAGIC && diag->append_status == RA_UNLOCK_NO_FILE)
+                    status = "SD file missing; pending";
+                print(1, 17, (unsigned char*)((e->flags & RA_VIEWER_SESSION) ? "Earned this session" : "Earned (sync pending)"), FONT_LIME, false);
+                print(1, 18, (const unsigned char*)status, FONT_RED, false);
+            }
+            {
+                raProgress progress;
+                char line[33];
+                raMenuProgress(e->id, &progress);
+                print(1, 12, (unsigned char*)"Progress", FONT_LIGHT_BLUE, false);
+                raProgressFormat(line, &progress);
+                print(1, 13, (const unsigned char*)line, FONT_WHITE, false);
+                if (progress.flags & RA_PROGRESS_MEASURED) {
+                    raProgressBar(line, &progress, 28);
+                    print(1, 15, (const unsigned char*)line, FONT_LIGHT_BLUE, false);
+                }
+            }
 			/*
 			    When it was earned, under the description rather than beside the status: the status
 			    is one word and this is a sentence, and a line of its own is the only place a date
@@ -1547,6 +1536,7 @@ static void ramViewer(void) {
 }
 
 u32 inGameMenu(s32 *mainScreen, u32 consoleModel, s32 *exceptionRegisters) {
+	raProgressAllowed = consoleModel > 0 && exceptionRegisters == 0;
 	// If we were given exception registers, then we're handling an exception
 	bool exception = (exceptionRegisters != 0);
 

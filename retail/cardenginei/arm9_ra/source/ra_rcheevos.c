@@ -45,6 +45,7 @@
 #include "ra_wifi.h"   /* raPendingBlock -- the menu's Sync Pending tally */
 #include "ra_text.h"
 #include "ra_rc_frame.h"
+#include "ra_progress.h"
 
 #include "rc_runtime.h"
 #include "rc_runtime_types.h"
@@ -227,6 +228,55 @@ static u8  initMaxLines;
 static u32 initTotalLines;
 static u8  rcStage;
 static raRcFrameState frameState;
+
+/* Nonzero initializer keeps the pre-startup guard in the loaded image, outside BSS. */
+static u32 queryGuard = RA_PROGRESS_INITIALIZING;
+
+void ra_rc_query_progress(uint32_t id, raProgress* out) {
+    const rc_trigger_t* trigger;
+    const raViewerBlock* const viewer = (const raViewerBlock*)CARDENGINEI_ARM9_RA_VIEWER_LOCATION;
+    unsigned i;
+    int known = 0;
+    if (!out) return;
+    out->id = id;
+    out->value = out->target = 0;
+    out->flags = RA_PROGRESS_INITIALIZING;
+    if (queryGuard) return;
+    out->flags = 0;
+    if (viewer->magic == RA_VIEWER_MAGIC) {
+        for (i = 0; i < viewer->count && i < RA_VIEWER_MAX_ENTRIES; ++i) {
+            if (viewer->entry[i].id == id) {
+                known = 1;
+                if (viewer->entry[i].flags & (RA_VIEWER_EARNED | RA_VIEWER_QUEUED | RA_VIEWER_SESSION))
+                    out->flags |= RA_PROGRESS_EARNED;
+                break;
+            }
+        }
+    }
+    trigger = id ? rc_runtime_get_achievement(&runtime, id) : NULL;
+    if (!trigger) {
+        out->flags |= (out->flags & RA_PROGRESS_EARNED) ? RA_PROGRESS_UNMEASURED
+            : (known && rcStage == RA_RC_LOADING ? RA_PROGRESS_INITIALIZING : RA_PROGRESS_MISSING);
+        return;
+    }
+    if (trigger->state == RC_TRIGGER_STATE_TRIGGERED) out->flags |= RA_PROGRESS_EARNED;
+    if (trigger->state == RC_TRIGGER_STATE_DISABLED || trigger->state == RC_TRIGGER_STATE_INACTIVE) {
+        out->flags |= RA_PROGRESS_DISABLED;
+        return;
+    }
+    if (!trigger->measured_target) {
+        out->flags |= RA_PROGRESS_UNMEASURED;
+        return;
+    }
+    if (trigger->measured_value == RC_MEASURED_UNKNOWN) {
+        out->flags |= RA_PROGRESS_INITIALIZING;
+        return;
+    }
+    out->value = trigger->measured_value;
+    out->target = trigger->measured_target;
+    out->flags |= RA_PROGRESS_MEASURED;
+    if (trigger->measured_as_percent) out->flags |= RA_PROGRESS_PERCENT;
+}
 
 static uint16_t ra_rc_frame_clock(void* userdata) {
 	(void)userdata;
@@ -533,54 +583,31 @@ static void ra_rc_queue_unlock(u32 id) {
 		}
 		return;
 	}
-	if (unlockQueued >= RA_UNLOCK_RING) {
-		if (unlockLost < 255) {
-			unlockLost++;
-		}
-		return;
-	}
-	unlockRing[unlockHead] = id;
-	unlockHead = (u8)((unlockHead + 1) % RA_UNLOCK_RING);
-	unlockQueued++;
-
-	/*
-	    And the achievements page learns about it now rather than next boot. The launcher's copy of
-	    the queue is what it read at boot, so an achievement earned since is in neither list -- and
-	    "I just got that, is it safe" is the question a player opens this page to ask.
-	*/
-	{
-		raViewerBlock* const v = (raViewerBlock*)CARDENGINEI_ARM9_RA_VIEWER_LOCATION;
-
-		if (v->magic == RA_VIEWER_MAGIC) {
-			u16 k;
-
-			for (k = 0; k < v->count && k < RA_VIEWER_MAX_ENTRIES; k++) {
-				if (v->entry[k].id == id) {
-					/*
-					    **EARNED as well as QUEUED**, and the missing half of that test was a real
-					    bug: this only checked QUEUED, so an achievement the server had already
-					    reported as earned, firing again this session, came out carrying *both*
-					    flags and bumping `queued` for something already inside `earned`.
-
-					    That can happen -- a cached set carries its own filtering, as old as the
-					    cache, so `sync=0` or a unlock deleted server-side leaves an earned
-					    achievement active -- and the menu's header now adds the two counts to
-					    print one number. Both flags on one entry would make it count twice and
-					    could put it past the size of the set.
-
-					    An entry that is already EARNED needs nothing from this: it is shown as
-					    earned, it is in the total, and the unlock still goes down the ring to the
-					    queue file exactly as before. Only the display is left alone.
-					*/
-					if (!(v->entry[k].flags & (RA_VIEWER_EARNED | RA_VIEWER_QUEUED))) {
-						v->entry[k].flags |= RA_VIEWER_QUEUED;
-						v->queued++;
-					}
-					break;
-				}
-			}
-		}
-	}
+    raViewerEntry* entry = NULL;
+    raViewerBlock* const viewer = (raViewerBlock*)CARDENGINEI_ARM9_RA_VIEWER_LOCATION;
+    if (viewer->magic == RA_VIEWER_MAGIC) {
+        unsigned i;
+        for (i = 0; i < viewer->count && i < RA_VIEWER_MAX_ENTRIES; ++i) {
+            if (viewer->entry[i].id == id) {
+                entry = &viewer->entry[i];
+                if (!(entry->flags & RA_VIEWER_EARNED)) entry->flags |= RA_VIEWER_SESSION;
+                break;
+            }
+        }
+    }
+    if (unlockQueued >= RA_UNLOCK_RING) {
+        if (unlockLost < 255) unlockLost++;
+        if (entry && !(entry->flags & (RA_VIEWER_EARNED | RA_VIEWER_QUEUED)))
+            entry->flags |= RA_VIEWER_UNSAVED;
+        return;
+    }
+    unlockRing[unlockHead] = id;
+    unlockHead = (u8)((unlockHead + 1) % RA_UNLOCK_RING);
+    unlockQueued++;
+    if (entry && !(entry->flags & (RA_VIEWER_EARNED | RA_VIEWER_QUEUED))) {
+        entry->flags = (entry->flags | RA_VIEWER_QUEUED) & ~RA_VIEWER_UNSAVED;
+        viewer->queued++;
+    }
 }
 
 /*
@@ -1302,6 +1329,7 @@ static u8 ra_rc_prepare(raSnapshot* snapshot) {
 		return RA_RC_NO_MEMREFS;
 	}
 
+	queryGuard = 0;
 	text        = (char*)ra_definition(snapshot);
 	defLines[0] = text;
 	defCount    = 1;
