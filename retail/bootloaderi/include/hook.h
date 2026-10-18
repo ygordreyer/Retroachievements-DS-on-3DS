@@ -37,6 +37,7 @@ int hookNdsRetailArm7(
     u32 patchOffsetCacheFileCluster,
 	u32 srParamsFileCluster,
 	u32 raUnlocksCluster,
+    const raBadgeDescriptor* raBadgePack,
 	u32 ramDumpCluster,
 	u32 screenshotCluster,
 	u32 wideCheatFileCluster,

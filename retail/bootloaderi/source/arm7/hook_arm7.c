@@ -136,6 +136,7 @@ int hookNdsRetailArm7(
     u32 patchOffsetCacheFileCluster,
 	u32 srParamsFileCluster,
 	u32 raUnlocksCluster,
+    const raBadgeDescriptor* raBadgePack,
 	u32 ramDumpCluster,
 	u32 screenshotCluster,
 	u32 wideCheatFileCluster,
@@ -377,12 +378,8 @@ int hookNdsRetailArm7(
 	ce7->srParamsCluster          = srParamsFileCluster;
 	ce7->raUnlocksCluster         = raUnlocksCluster;
     toncset(&ce7->raBadgePack, 0, sizeof(ce7->raBadgePack));
-    if (dsiSD && *(u32*)CARDENGINEI_ARM9_RA_SESSION_BUFFERED_LOCATION == CARDENGINEI_ARM9_RA_SESSION_MAGIC) {
-        const raBadgeDescriptor* pack = (const raBadgeDescriptor*)
-            (CARDENGINEI_ARM9_RA_SESSION_BUFFERED_LOCATION + RA_BADGE_SESSION_OFFSET);
-        if (pack->magic == RA_BADGE_DESCRIPTOR_MAGIC)
-            ce7->raBadgePack = *pack;
-    }
+    if (dsiSD && raBadgePack->magic == RA_BADGE_DESCRIPTOR_MAGIC)
+        ce7->raBadgePack = *raBadgePack;
 	/*
 	    cardengineArm7 is the second positional mirror in this project: card_engine_header.s declares
 	    the same fields as labels in order, the ARM7 cardengine reads them as externs, and nothing in

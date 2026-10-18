@@ -1,9 +1,55 @@
 #include <assert.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "ra_badge.h"
 #include "ra_progress_ui.h"
+
+typedef uint8_t u8;
+typedef unsigned FontPalette;
+enum { FONT_LIGHT_BLUE, FONT_LIGHT_GRAY };
+static struct { bool rtl; } igmText;
+static uint16_t menuMap[32 * 24];
+#define BG_MAP_RAM_SUB(n) menuMap
+
+static void print(int x, int y, const unsigned char* text, FontPalette color, bool main) {
+    (void)color;
+    (void)main;
+    assert(x >= 1 && x + strlen((const char*)text) <= 27 && y >= 0 && y < 24);
+    while (*text) menuMap[y * 32 + x++] = *text++;
+}
+
+#include "ra_badge_layout.h"
+
+static void cursorTests(void) {
+    for (unsigned rtl = 0; rtl < 2; ++rtl) {
+        igmText.rtl = rtl;
+        for (unsigned slot = 0; slot < 10; ++slot) {
+            unsigned y = slot == 9 ? 19 : 3 + 2 * slot;
+            memset(menuMap, 0, sizeof(menuMap));
+            for (unsigned row = 0; row < 4; ++row)
+                for (unsigned col = 0; col < 4; ++col)
+                    menuMap[(y + row) * 32 + 27 + col] = raBadgeMap(col, row);
+            drawCursor(y);
+            for (unsigned row = 0; row < 4; ++row)
+                for (unsigned col = 0; col < 4; ++col)
+                    assert(menuMap[(y + row) * 32 + 27 + col] == raBadgeMap(col, row));
+            assert(menuMap[y * 32 + (rtl ? 31 : 0)] == (rtl ? '<' : '>'));
+        }
+    }
+    const raProgress progress[] = {
+        {0, 0xffffffffu, 0xffffffffu, RA_PROGRESS_MEASURED},
+        {0, 0, 0xffffffffu, RA_PROGRESS_MEASURED},
+        {0, 1, 10, RA_PROGRESS_MEASURED},
+        {0, 1, 10, RA_PROGRESS_MEASURED | RA_PROGRESS_PERCENT},
+        {0, 0, 0, 0}, {0, 0, 0, RA_PROGRESS_INITIALIZING},
+        {0, 0, 0, RA_PROGRESS_DISABLED}
+    };
+    for (unsigned i = 0; i < sizeof(progress) / sizeof(*progress); ++i)
+        raDrawProgress(4, &progress[i], 5);
+    puts("badge layout: real RTL/LTR cursor preserves all nine list badges and detail badge; progress text stays before column 27 passed");
+}
 
 typedef struct TestFile {
     unsigned char* data;
@@ -166,7 +212,7 @@ static void renderingTests(void) {
         assert(offset < sizeof(backup)); vram[offset] = 0;
     }
     for (unsigned slot = 0; slot < 10; ++slot) {
-        unsigned ox = slot == 9 ? 27 : 28, oy = slot == 9 ? 19 : 3 + 2 * slot;
+        unsigned ox = 27, oy = slot == 9 ? 19 : 3 + 2 * slot;
         for (unsigned y = 0; y < 4; ++y) {
             for (unsigned x = 0; x < 4; ++x) {
                 uint16_t entry = raBadgeMap(x, y);
@@ -191,7 +237,7 @@ static void renderingTests(void) {
     raProgress progress = {0, 0xffffffffu, 0xffffffffu, RA_PROGRESS_MEASURED};
     char text[33];
     raProgressFormat(text, &progress);
-    assert(strlen(text) == 21 && 6 + 1 + strlen(text) == 28);
+    assert(strlen(text) == 21 && 5 + 1 + strlen(text) == 27);
     puts("badge rendering: all 32768 RGB555 grayscale colors, transparent placeholder tiling, nine-row numeric fit, tile/map/palette touched ranges and byte restoration passed");
 }
 
@@ -205,5 +251,6 @@ int main(void) {
     parserTests(golden, size);
     maximumDirectory();
     renderingTests();
+    cursorTests();
     return 0;
 }

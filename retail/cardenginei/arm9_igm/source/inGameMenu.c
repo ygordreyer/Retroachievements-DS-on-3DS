@@ -772,10 +772,10 @@ static void raDrawProgress(int y, const raProgress* progress, unsigned width) {
     while (width > 1 && width + length > 22) --width;
     if (progress->flags & RA_PROGRESS_MEASURED) {
         raProgressBar(row, progress, width);
-        print(3, y, (const unsigned char*)row, FONT_LIGHT_BLUE, false);
+        print(2, y, (const unsigned char*)row, FONT_LIGHT_BLUE, false);
     }
     raProgressFormat(row, progress);
-    print((progress->flags & RA_PROGRESS_MEASURED) ? 6 + width : 3, y,
+    print((progress->flags & RA_PROGRESS_MEASURED) ? 5 + width : 3, y,
           (const unsigned char*)row, FONT_LIGHT_GRAY, false);
 }
 
@@ -856,7 +856,7 @@ static void raAchievementsPage(void) {
         }
         {
             const raViewerEntry* e = &v->entry[top + cursor];
-            raMenuBadge(e->id, (e->flags & (RA_VIEWER_EARNED | RA_VIEWER_QUEUED | RA_VIEWER_SESSION)) != 0, 28, 3 + 2 * cursor);
+            raMenuBadge(e->id, (e->flags & (RA_VIEWER_EARNED | RA_VIEWER_QUEUED | RA_VIEWER_SESSION)) != 0, 27, 3 + 2 * cursor);
         }
         drawCursor((u8)(3 + 2 * cursor));
         print(1, 23, (unsigned char*)"A: Details B: Back  </>: Page", FONT_WHITE, false);

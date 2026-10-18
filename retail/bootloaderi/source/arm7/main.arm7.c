@@ -1651,6 +1651,12 @@ int arm7_main(void) {
 	nocashMessage("Getting ARM7 to clear RAM...\n");
 	resetMemory_ARM7();
 
+    /* The staged session is cleared before the retail ARM7 hook runs. */
+    raBadgeDescriptor raBadgePack = {0};
+    if (*(u32*)CARDENGINEI_ARM9_RA_SESSION_BUFFERED_LOCATION == CARDENGINEI_ARM9_RA_SESSION_MAGIC)
+        raBadgePack = *(const raBadgeDescriptor*)
+            (CARDENGINEI_ARM9_RA_SESSION_BUFFERED_LOCATION + RA_BADGE_SESSION_OFFSET);
+
 	wifiLedState = i2cReadRegister(0x4A, 0x30);
 
 	// Init card
@@ -2138,6 +2144,7 @@ int arm7_main(void) {
 			patchOffsetCacheFileCluster,
 			srParamsFileCluster,
 			raUnlocksCluster,
+            &raBadgePack,
 			ramDumpCluster,
 			screenshotCluster,
 			wideCheatFileCluster,
@@ -2555,6 +2562,7 @@ int arm7_main(void) {
 			patchOffsetCacheFileCluster,
 			srParamsFileCluster,
 			raUnlocksCluster,
+            &raBadgePack,
 			ramDumpCluster,
 			screenshotCluster,
 			wideCheatFileCluster,

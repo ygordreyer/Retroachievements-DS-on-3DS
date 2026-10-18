@@ -1566,8 +1566,7 @@ u32 fileRead (char* buffer, aFile* file, u32 startOffset, u32 length)
 		  #else
           tonccpy(buffer+dataPos,globalBuffer,length-dataPos);
 		  #endif
-          curByte+=length;
-          dataPos+=length;
+          dataPos=length;
 	}
 
       #ifdef DEBUG
